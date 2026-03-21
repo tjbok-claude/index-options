@@ -1,2 +1,7 @@
 requests
 pandas
+numpy
+flask
+arch
+scipy
+yfinance

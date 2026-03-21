@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SPX Hedge Ranker</title>
+  <link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator_midnight.min.css" rel="stylesheet">
+  <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────── -->
+<header>
+  <div class="header-left">
+    <div class="logo">
+      <span class="logo-icon">◈</span>
+      <span class="logo-text">SPX Hedge Ranker</span>
+    </div>
+    <span class="subtitle">$5M equity hedge &nbsp;·&nbsp; Roth IRA puts &nbsp;·&nbsp; ranked by EPR</span>
+  </div>
+  <div class="header-right">
+    <span id="statusMsg" class="status-msg" style="display:none"></span>
+    <span id="staleBadge" class="stale-badge" style="display:none"></span>
+    <button id="fetchBtn" class="btn-primary">
+      <span id="spinner" class="spinner" style="display:none"></span>
+      <span>Fetch Live Data</span>
+    </button>
+  </div>
+</header>
+
+<!-- ── Tab bar ────────────────────────────────────────────── -->
+<nav class="tab-bar">
+  <button id="tabOptions" class="tab-btn tab-active" onclick="switchTab('options')">Options Grid</button>
+  <button id="tabModel"   class="tab-btn"            onclick="switchTab('model')">Model Builder</button>
+</nav>
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB 1 — OPTIONS GRID
+     ══════════════════════════════════════════════════════════ -->
+<div id="tabContentOptions" class="tab-content">
+
+<!-- ── Error banner ───────────────────────────────────────── -->
+<div id="errorBanner" class="error-banner" style="display:none"></div>
+
+<!-- ── Parameters ────────────────────────────────────────── -->
+<section class="panel" id="paramPanel">
+  <div class="panel-header">
+    <span class="panel-title">Parameters</span>
+    <span class="panel-hint">changes trigger server re-score</span>
+    <button id="toggleParams" class="panel-toggle" title="Collapse">▲</button>
+  </div>
+  <div class="panel-body">
+    <div class="controls-row">
+
+      <label class="ctrl">
+        <span class="ctrl-label">P(crash)
+          <span class="help-tip" title="Your subjective probability of a ≥20% SPX drawdown over the hold horizon. Default 0.55. This is the key driver of EPR — higher crash belief → higher EPR across all puts.">?</span>
+        </span>
+        <input id="pCrash" type="number" value="0.55" min="0.01" max="0.99" step="0.01">
+        <span class="ctrl-hint">probability 0–1</span>
+      </label>
+
+      <label class="ctrl">
+        <span class="ctrl-label">Horizon (months)
+          <span class="help-tip" title="Intended hold period. Used to compute total budget (annual budget × horizon/12) and annualized cost %. Does not change the DTE filter — use the DTE filter controls for that.">?</span>
+        </span>
+        <input id="horizon" type="number" value="18" min="1" max="60" step="1">
+        <span class="ctrl-hint">set-and-forget period</span>
+      </label>
+
+      <label class="ctrl">
+        <span class="ctrl-label">Roth multiplier
+          <span class="help-tip" title="Tax advantage of the Roth IRA. $1 of Roth payoff = this many dollars in taxable-equivalent terms. Default 1.25 (assumes ~20% capital gains rate). Raise if in a high tax bracket.">?</span>
+        </span>
+        <input id="rothMult" type="number" value="1.25" min="1.0" max="3.0" step="0.05">
+        <span class="ctrl-hint">Roth $ × multiplier = taxable equiv</span>
+      </label>
+
+      <label class="ctrl">
+        <span class="ctrl-label">Contracts (0=auto)
+          <span class="help-tip" title="Number of contracts to buy. 0 = auto-size from portfolio beta: N = ($5M × β) / (SPX × 100). At SPX≈6500 this gives ~7 contracts for full hedge.">?</span>
+        </span>
+        <input id="contracts" type="number" value="0" min="0" max="100" step="1">
+        <span class="ctrl-hint">0 = beta-weighted auto</span>
+      </label>
+
+      <label class="ctrl">
+        <span class="ctrl-label">Scenario model
+          <span class="help-tip" title="How crash probability is scaled to each option's DTE.
+
+survival (default): P(crash in d days) = 1 − (1−p_crash)^(d/H). A 6-month put gets a lower crash probability than an 18-month put, consistent with your belief being stated over the full horizon. Makes cross-expiry EPR comparison meaningful.
+
+flat (original): same P(crash) applied to every option regardless of DTE. Useful as a reference or when you want to state a DTE-specific probability directly.">?</span>
+        </span>
+        <select id="modelSelect">
+          <option value="survival" selected>survival (DTE-scaled)</option>
+          <option value="flat">flat (original)</option>
+          <option value="garch_ep">GARCH/EP (model builder)</option>
+        </select>
+        <span class="ctrl-hint">how P(crash) scales with DTE</span>
+      </label>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Filters ────────────────────────────────────────────── -->
+<section class="panel" id="filterPanel">
+  <div class="panel-header">
+    <span class="panel-title">Filters</span>
+    <span class="panel-hint">instant — no server call</span>
+    <button id="toggleFilters" class="panel-toggle" title="Collapse">▲</button>
+  </div>
+  <div class="panel-body">
+    <div class="controls-row">
+
+      <label class="ctrl ctrl-narrow">
+        <span class="ctrl-label">DTE min</span>
+        <input id="dteMin" type="number" value="0" min="0" max="999" step="30">
+      </label>
+
+      <label class="ctrl ctrl-narrow">
+        <span class="ctrl-label">DTE max</span>
+        <input id="dteMax" type="number" value="9999" min="0" max="9999" step="30">
+      </label>
+
+      <div class="ctrl-divider"></div>
+
+      <label class="ctrl ctrl-narrow">
+        <span class="ctrl-label">Min OI</span>
+        <input id="oiMin" type="number" value="100" min="0" max="100000" step="100">
+      </label>
+
+      <label class="ctrl ctrl-narrow">
+        <span class="ctrl-label">Min volume</span>
+        <input id="volMin" type="number" value="0" min="0" max="100000" step="10">
+      </label>
+
+      <div class="ctrl-divider"></div>
+
+      <label class="ctrl ctrl-narrow">
+        <span class="ctrl-label">OTM% min</span>
+        <input id="moneynessMin" type="number" value="-50" min="-100" max="0" step="1">
+      </label>
+
+      <label class="ctrl ctrl-narrow">
+        <span class="ctrl-label">OTM% max</span>
+        <input id="moneynessMax" type="number" value="0" min="-100" max="0" step="1">
+      </label>
+
+      <div class="ctrl-divider"></div>
+
+      <label class="ctrl">
+        <span class="ctrl-label">Session</span>
+        <select id="sessionFilter">
+          <option value="ALL">AM + PM</option>
+          <option value="AM">AM only</option>
+          <option value="PM">PM only</option>
+        </select>
+      </label>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Status bar ─────────────────────────────────────────── -->
+<div class="status-bar">
+  <span class="meta-group">
+    <span class="meta-key">SPX</span>
+    <strong id="metaSpot" class="meta-val">—</strong>
+  </span>
+  <span class="meta-sep"></span>
+  <span class="meta-group">
+    <span class="meta-key">IV30</span>
+    <strong id="metaIV30" class="meta-val">—</strong>
+  </span>
+  <span class="meta-sep"></span>
+  <span class="meta-group">
+    <span class="meta-key">Sizing</span>
+    <strong id="metaN" class="meta-val">—</strong>
+  </span>
+  <span class="meta-sep"></span>
+  <span class="meta-group">
+    <span class="meta-key">CBOE as-of</span>
+    <strong id="metaTimestamp" class="meta-val">—</strong>
+  </span>
+  <span class="meta-sep"></span>
+  <span class="meta-group">
+    <strong id="metaFiltered" class="meta-val muted">—</strong>
+  </span>
+  <span class="meta-right">
+    <span id="sortIndicator" class="sort-indicator"></span>
+    <span class="meta-key">Showing</span>
+    <strong id="rowCount" class="meta-val">—</strong>
+  </span>
+</div>
+
+<!-- ── Grid ───────────────────────────────────────────────── -->
+<div id="grid"></div>
+
+<!-- ── Legend ─────────────────────────────────────────────── -->
+<div class="legend">
+  <span class="legend-chip epr-high-chip">EPR ≥ 2.0</span>
+  <span class="legend-chip epr-mid-chip">EPR 1–2</span>
+<span class="legend-chip warn-chip">Spread &gt;20% or overpaying vs theo</span>
+  <span class="legend-right">
+    EPR = risk-adj. expected payoff / cost &nbsp;·&nbsp;
+    E[Pay] includes 1.25× Roth multiplier &nbsp;·&nbsp;
+    hover column headers for definitions &nbsp;·&nbsp;
+    data ~15 min delayed
+  </span>
+</div>
+
+</div><!-- end #tabContentOptions -->
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB 2 — MODEL BUILDER
+     ══════════════════════════════════════════════════════════ -->
+<div id="tabContentModel" class="tab-content" style="display:none">
+
+  <div class="mb-layout">
+
+    <!-- ── Left column: controls ──────────────────────────── -->
+    <div class="mb-left">
+
+      <!-- Init status -->
+      <div class="mb-section">
+        <div class="mb-section-title">GARCH Simulation</div>
+        <div id="mbInitStatus" class="mb-init-status">Initializing…</div>
+        <div class="drift-row" style="margin-top:8px">
+          <label class="ctrl-label" style="display:block;margin-bottom:4px">
+            Annual drift (%/yr)
+            <span class="help-tip" title="Override the GARCH fitted drift. Leave blank to use the value fitted from 30 years of SPX history. Lower values (e.g. 5%) produce more conservative path projections; 0 = flat drift.">?</span>
+          </label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="mbDriftInput" type="number" step="0.5" min="-5" max="20" placeholder="fitted"
+                   style="width:88px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;
+                          color:var(--text);font-family:inherit;font-size:12px;padding:4px 7px;outline:none">
+            <span id="mbFittedDrift" style="font-size:10px;color:var(--text-dim)"></span>
+          </div>
+        </div>
+        <button id="mbReinitBtn" class="btn-secondary" onclick="mbReinit()" style="margin-top:8px">
+          Re-init simulation
+        </button>
+      </div>
+
+      <!-- Bucket editor -->
+      <div class="mb-section">
+        <div class="mb-section-title">Your Views — 2yr Running Min CDF
+          <span class="help-tip" title="Each row states: P(2yr lowest SPX < Level) = Cum Prob. Enter cumulative probabilities in ascending order (0 to 1). The model will interpolate between your specified levels.">?</span>
+        </div>
+        <table class="bucket-table" id="bucketTable">
+          <thead><tr><th>SPX Level</th><th>Cum Prob</th><th></th></tr></thead>
+          <tbody id="bucketBody"></tbody>
+        </table>
+        <div class="bucket-actions">
+          <button class="btn-secondary" onclick="mbAddRow()">+ Add row</button>
+          <button class="btn-secondary" onclick="mbResetBuckets()">Reset defaults</button>
+        </div>
+      </div>
+
+      <!-- Confidence -->
+      <div class="mb-section">
+        <div class="mb-section-title">EP Confidence
+          <span class="help-tip" title="0 = pure GARCH prior (your buckets ignored). 1 = views fully imposed. Values between blend the two. Start at 1.0 and reduce if the EP solution looks too extreme.">?</span>
+        </div>
+        <div class="slider-row">
+          <input type="range" id="mbConfidence" min="0" max="1" step="0.05" value="1.0"
+                 oninput="mbConfidenceDisplay.textContent=parseFloat(this.value).toFixed(2); mbSchedulePreview()">
+          <span id="mbConfidenceDisplay" class="slider-val">1.00</span>
+        </div>
+      </div>
+
+      <!-- DTE selector for terminal dist -->
+      <div class="mb-section">
+        <div class="mb-section-title">Terminal Distribution at DTE</div>
+        <select id="mbQueryDte" class="mb-select" onchange="mbSchedulePreview()">
+          <option value="90">90 days (~3 months)</option>
+          <option value="180">180 days (~6 months)</option>
+          <option value="252" selected>252 days (~1 year)</option>
+          <option value="365">365 days (~17 months)</option>
+          <option value="504">504 days (~2 years)</option>
+        </select>
+      </div>
+
+      <!-- Action buttons -->
+      <div class="mb-section">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span id="mbPreviewSpinner" class="spinner" style="display:none"></span>
+          <span id="mbPreviewStatus" class="mb-preview-status"></span>
+        </div>
+        <button id="mbCommitBtn" class="btn-commit" style="width:100%" onclick="mbCommit()">
+          <span id="mbCommitSpinner" class="spinner" style="display:none"></span>
+          Apply to options grid ▶
+        </button>
+        <div style="margin-top:5px;font-size:10px;color:var(--text-dim)">
+          Charts update automatically as you edit. This button commits the model to the options grid scorer.
+        </div>
+      </div>
+      <div id="mbCommitStatus" class="mb-commit-status" style="display:none"></div>
+      <div id="mbError" class="mb-error" style="display:none"></div>
+
+    </div><!-- end mb-left -->
+
+    <!-- ── Right column: charts ───────────────────────────── -->
+    <div class="mb-right">
+
+      <!-- Prior stats table -->
+      <div class="mb-section">
+        <div class="mb-section-title">GARCH Prior vs Your View</div>
+        <table class="prior-table" id="priorTable">
+          <thead><tr>
+            <th>Drawdown</th><th>SPX Level</th>
+            <th>GARCH Prior</th><th>Your View</th>
+          </tr></thead>
+          <tbody id="priorBody"><tr><td colspan="4" class="prior-loading">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- Decile paths chart -->
+      <div class="mb-section">
+        <div class="mb-section-title">Representative Paths by Decile
+          <span class="help-tip" title="10 paths ranked by severity of 2yr drawdown. Decile 1 (red) = worst crash scenario. Decile 10 (green) = bull case. Line weight shows EP probability mass in each decile — thicker = more weight under your view.">?</span>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="pathChart"></canvas>
+        </div>
+        <div id="decileWeights" class="decile-weights"></div>
+      </div>
+
+      <!-- Terminal distribution chart -->
+      <div class="mb-section">
+        <div class="mb-section-title">Terminal Distribution at Selected DTE</div>
+        <div class="chart-wrap chart-wrap-short">
+          <canvas id="termChart"></canvas>
+        </div>
+      </div>
+
+    </div><!-- end mb-right -->
+  </div><!-- end mb-layout -->
+</div><!-- end #tabContentModel -->
+
+<script src="/static/app.js"></script>
+</body>
+</html>

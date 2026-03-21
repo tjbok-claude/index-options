@@ -65,7 +65,6 @@ def parse_option_symbol(sym: str) -> tuple[str, date, str, float]:
     Format: {underlying}{YYMMDD}{C|P}{8-digit strike*1000}
     Example: SPX260320C00200000 -> ('SPX', date(2026,3,20), 'C', 200.0)
     """
-    # Find the date+type+strike suffix (last 15 chars: 6 date + 1 type + 8 strike)
     suffix = sym[-15:]
     underlying = sym[:-15]
     yy, mm, dd = int(suffix[0:2]), int(suffix[2:4]), int(suffix[4:6])
@@ -75,9 +74,25 @@ def parse_option_symbol(sym: str) -> tuple[str, date, str, float]:
     return underlying, expiry, opt_type, strike
 
 
-def parse_chain(raw: dict) -> tuple[pd.DataFrame, dict]:
+def _session(underlying_prefix: str, base_symbol: str) -> str:
+    """
+    Return 'AM' or 'PM' based on the option's underlying prefix.
+
+    On monthly expirations, CBOE lists both AM-settled (e.g. SPX, NDX) and
+    PM-settled (e.g. SPXW, NDXP) contracts on the same date. The base symbol
+    (no suffix) is AM; any variant with a trailing letter is PM.
+    """
+    return "AM" if underlying_prefix == base_symbol else "PM"
+
+
+def parse_chain(raw: dict, base_symbol: str) -> tuple[pd.DataFrame, dict]:
     """
     Parse raw CBOE JSON into a tidy DataFrame plus underlying info dict.
+
+    AM/PM settlement is derived from the option prefix: the canonical symbol
+    (e.g. SPX) is AM-settled; variants (e.g. SPXW) are PM-settled.
+    On dates where only one settlement type exists, session is still set
+    (typically PM for weekly expirations).
 
     Returns (df, underlying_info).
     """
@@ -98,12 +113,13 @@ def parse_chain(raw: dict) -> tuple[pd.DataFrame, dict]:
     for opt in options:
         sym = opt.get("option", "")
         try:
-            _, expiry, opt_type, strike = parse_option_symbol(sym)
+            prefix, expiry, opt_type, strike = parse_option_symbol(sym)
         except Exception:
             continue
 
         rows.append({
             "expiry":        expiry,
+            "session":       _session(prefix, base_symbol),
             "strike":        strike,
             "type":          "CALL" if opt_type == "C" else "PUT",
             "bid":           opt.get("bid"),
@@ -123,8 +139,21 @@ def parse_chain(raw: dict) -> tuple[pd.DataFrame, dict]:
 
     df = pd.DataFrame(rows)
     if not df.empty:
-        df = df.sort_values(["expiry", "strike", "type"]).reset_index(drop=True)
+        df = df.sort_values(["expiry", "session", "strike", "type"]).reset_index(drop=True)
     return df, underlying_info
+
+
+def expiry_label(exp: date, session: str, df: pd.DataFrame) -> str:
+    """
+    Return a display label for an (expiry, session) pair.
+
+    Appends the session only when both AM and PM exist on that date,
+    e.g. '2026-03-20 AM' / '2026-03-20 PM'. Otherwise just the date.
+    """
+    sessions_on_date = df[df["expiry"] == exp]["session"].unique()
+    if len(sessions_on_date) > 1:
+        return f"{exp.isoformat()} {session}"
+    return exp.isoformat()
 
 
 def main():
@@ -161,7 +190,7 @@ def main():
         print(json.dumps(raw, indent=2))
         return
 
-    df, underlying = parse_chain(raw)
+    df, underlying = parse_chain(raw, base_symbol=symbol)
 
     if df.empty:
         print("No data parsed.")
@@ -172,53 +201,58 @@ def main():
           f"chg={underlying['price_change']} ({underlying['price_change_pct']:.2f}%)  "
           f"IV30={underlying['iv30']:.2f}  as-of={underlying['timestamp']}")
 
-    expirations = sorted(df["expiry"].unique())
+    # Build sorted list of (expiry, session) pairs — AM before PM on same date
+    expirations = sorted(df.groupby(["expiry", "session"]).groups.keys())
 
     # List expirations mode
     if args.exps:
         print(f"\nAvailable expirations ({len(expirations)}):")
         today = date.today()
-        for i, exp in enumerate(expirations):
+        for i, (exp, ses) in enumerate(expirations):
             dte = (exp - today).days
-            n_strikes = df[df["expiry"] == exp]["strike"].nunique()
+            mask = (df["expiry"] == exp) & (df["session"] == ses)
+            n_strikes = df[mask]["strike"].nunique()
+            label = expiry_label(exp, ses, df)
             marker = " <-- selected" if i == args.exp else ""
-            print(f"  [{i:3d}] {exp.isoformat()}  DTE={dte:3d}  strikes={n_strikes}{marker}")
+            print(f"  [{i:3d}] {label:20s}  DTE={dte:3d}  strikes={n_strikes}{marker}")
         return
 
     # Select expiry
     if args.all_exps:
         filtered = df
-        exp_label = "ALL"
+        chosen_label = "ALL"
     else:
         if args.exp >= len(expirations):
             print(f"--exp {args.exp} out of range (max {len(expirations)-1}). "
                   f"Run --exps to list available expirations.")
             sys.exit(1)
-        chosen_exp = expirations[args.exp]
-        filtered = df[df["expiry"] == chosen_exp].copy()
+        chosen_exp, chosen_ses = expirations[args.exp]
+        mask = (df["expiry"] == chosen_exp) & (df["session"] == chosen_ses)
+        filtered = df[mask].copy()
         dte = (chosen_exp - date.today()).days
-        exp_label = f"{chosen_exp.isoformat()} (DTE={dte})"
+        chosen_label = f"{expiry_label(chosen_exp, chosen_ses, df)} (DTE={dte})"
 
         # Show expiry list context
         print(f"\nAvailable expirations ({len(expirations)} total):")
-        for i, exp in enumerate(expirations[:10]):
+        for i, (exp, ses) in enumerate(expirations[:10]):
+            label = expiry_label(exp, ses, df)
             marker = " <-- selected" if i == args.exp else ""
-            print(f"  [{i:2d}] {exp.isoformat()}{marker}")
+            print(f"  [{i:2d}] {label}{marker}")
         if len(expirations) > 10:
             print(f"  ... and {len(expirations) - 10} more (use --exps to list all)")
 
     n_strikes = filtered["strike"].nunique()
-    print(f"\nOptions chain — {symbol}  expiry={exp_label}")
+    print(f"\nOptions chain — {symbol}  expiry={chosen_label}")
     print(f"  {n_strikes} strikes, {len(filtered)} rows (calls + puts)\n")
 
     pd.set_option("display.float_format", "{:.4f}".format)
     pd.set_option("display.max_rows", 60)
     pd.set_option("display.width", 140)
-    print(filtered.drop(columns=["expiry"]).to_string(index=False))
+    print(filtered.drop(columns=["expiry", "session"]).to_string(index=False))
 
     if args.save:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        exp_tag = exp_label.replace(" ", "").replace("(", "").replace(")", "").replace("=", "")
+        exp_tag = chosen_label.replace(" ", "").replace("(", "").replace(")", "").replace("=", "")
         fname = f"{symbol}_options_{exp_tag}_{ts}.csv"
         filtered.to_csv(fname, index=False)
         print(f"\nSaved to {fname}")
