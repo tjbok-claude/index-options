@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260321d');
+console.log('app.js v20260321e');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -949,11 +949,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   updateGarchDisabledState();
 
-  // Symbol change: auto-fill crash-beta default, show overlay immediately, force-fetch
+  // Symbol change: auto-fill crash-beta default, show overlay immediately, force-fetch.
+  // Reset state.loading so a concurrent fetch never silently blocks the symbol switch.
   $('symbolSelect')?.addEventListener('change', () => {
     const sym    = $('symbolSelect').value;
     const betaEl = $('indexBeta');
     if (betaEl) betaEl.value = SYMBOL_BETA_DEFAULTS[sym] ?? 1.0;
+    state.loading = false;
     showGridOverlay(true);
     fetchOptions(true);
   });
