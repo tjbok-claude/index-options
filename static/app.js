@@ -261,7 +261,7 @@ function initTable() {
   table = new Tabulator('#grid', {
     data:                 [],
     columns:              COLUMNS,
-    layout:               'fitColumns',
+    layout:               'fitDataStretch',
     renderVertical:       'virtual',
     height:               initialH + 'px',
     rowFormatter:         rowFormatter,
