@@ -153,96 +153,96 @@ const COLUMNS = [
     tooltip: 'Option expiration date (YYYY-MM-DD).',
   },
   {
-    title: 'Ses', field: 'session', sorter: 'string', width: 46, minWidth: 36, frozen: true,
+    title: 'Ses', field: 'session', sorter: 'string', width: 52, minWidth: 52, frozen: true,
     tooltip: 'AM = standard SPX (cash-settled at open on expiry day). PM = SPXW weekly (settled at close). AM has lower gamma risk for multi-month holds.',
   },
   {
-    title: 'DTE', field: 'dte', sorter: 'number', width: 56, minWidth: 46,
+    title: 'DTE', field: 'dte', sorter: 'number', width: 60, minWidth: 60,
     tooltip: 'Days to expiration. Filter shows only 180–540 DTE by default (6–18 months for set-and-forget).',
   },
   {
-    title: 'Strike', field: 'strike', sorter: 'number', width: 76, minWidth: 62,
+    title: 'Strike', field: 'strike', sorter: 'number', width: 78, minWidth: 72,
     tooltip: 'Option strike price in SPX index points.',
   },
   {
-    title: 'OTM%', field: 'moneyness_pct', sorter: 'number', width: 72, minWidth: 58, formatter: fmtMoneyness,
+    title: 'OTM%', field: 'moneyness_pct', sorter: 'number', width: 76, minWidth: 70, formatter: fmtMoneyness,
     tooltip: 'How far out-of-the-money: (strike / SPX_spot − 1) × 100. −20% means the strike is 20% below current SPX. The 20%-portfolio-drawdown protection zone is roughly −19% to −22%.',
   },
   {
-    title: 'Mid', field: 'mid', sorter: 'number', width: 66, minWidth: 52, formatter: fmtDollar2,
+    title: 'Mid', field: 'mid', sorter: 'number', width: 72, minWidth: 66, formatter: fmtDollar2,
     tooltip: 'Mid-market price = (bid + ask) / 2, in SPX index points. Multiply by 100 for dollar cost per contract.',
   },
   {
-    title: 'Sprd%', field: 'spread_pct', sorter: 'number', width: 64, minWidth: 52, formatter: fmtSpread,
+    title: 'Sprd%', field: 'spread_pct', sorter: 'number', width: 72, minWidth: 66, formatter: fmtSpread,
     tooltip: 'Bid-ask spread as % of mid. Above 20% (shown amber) means mid is unreliable — expect to pay more than mid to fill.',
   },
   {
-    title: 'IV', field: 'iv', sorter: 'number', width: 62, minWidth: 48, formatter: fmtIV,
+    title: 'IV', field: 'iv', sorter: 'number', width: 62, minWidth: 56, formatter: fmtIV,
     tooltip: 'Implied volatility from CBOE model. Higher IV = more expensive option. Compare across strikes/expiries to find relatively cheap contracts.',
   },
   {
-    title: 'Delta', field: 'delta', sorter: 'number', width: 62, minWidth: 50, formatter: fmtNum2,
+    title: 'Delta', field: 'delta', sorter: 'number', width: 72, minWidth: 66, formatter: fmtNum2,
     tooltip: 'Option delta: $ change in option price per $1 move in SPX. Negative for puts. −0.15 delta ≈ 15% probability of finishing in-the-money (rough approximation).',
   },
   {
-    title: 'Theta/d', field: 'theta_daily', sorter: 'number', width: 72, minWidth: 56, formatter: fmtNum2,
+    title: 'Theta/d', field: 'theta_daily', sorter: 'number', width: 84, minWidth: 84, formatter: fmtNum2,
     tooltip: 'Daily time decay: dollars lost per contract per calendar day from time passing alone. Negative. LEAPS have slow theta — a key advantage for set-and-forget.',
   },
   {
-    title: 'OI', field: 'open_interest', sorter: 'number', width: 72, minWidth: 56,
+    title: 'OI', field: 'open_interest', sorter: 'number', width: 72, minWidth: 66,
     tooltip: 'Open interest: total open contracts. Higher OI = better liquidity, tighter markets. Filter minimum is 100 by default.',
   },
   {
-    title: 'Vol', field: 'volume', sorter: 'number', width: 66, minWidth: 50,
+    title: 'Vol', field: 'volume', sorter: 'number', width: 66, minWidth: 60,
     tooltip: "Today's trading volume. Low volume doesn't disqualify a contract (LEAPS are thinly traded) but confirms whether mid price reflects real activity.",
   },
   {
-    title: 'Cost 1c', field: 'cost_1c', sorter: 'number', width: 85, minWidth: 70, formatter: fmtDollar0,
+    title: 'Cost 1c', field: 'cost_1c', sorter: 'number', width: 88, minWidth: 82, formatter: fmtDollar0,
     tooltip: 'Total premium cost for one contract = mid × 100. Each SPX contract covers 100 index units.',
   },
   {
-    title: 'Cost Nc', field: 'cost_Nc', sorter: 'number', width: 88, minWidth: 72, formatter: fmtDollar0,
+    title: 'Cost Nc', field: 'cost_Nc', sorter: 'number', width: 88, minWidth: 82, formatter: fmtDollar0,
     tooltip: 'Total cost for N contracts (your full position). N is auto-computed from portfolio beta unless overridden.',
   },
   {
     title: 'Crash Payoffs (per contract)',
     columns: [
       {
-        title: 'SPX −25%', field: 'payoff_crash_25pct_1c', sorter: 'number', width: 90, minWidth: 72, formatter: fmtDollar0,
+        title: 'SPX −25%', field: 'payoff_crash_25pct_1c', sorter: 'number', width: 96, minWidth: 96, formatter: fmtDollar0,
         tooltip: 'Gross payoff if SPX drops 25% from today. Your $5M portfolio would drop ~22% (beta-adjusted). This is the "mild crash" scenario.',
       },
       {
-        title: 'SPX −40%', field: 'payoff_crash_40pct_1c', sorter: 'number', width: 90, minWidth: 72, formatter: fmtDollar0,
+        title: 'SPX −40%', field: 'payoff_crash_40pct_1c', sorter: 'number', width: 96, minWidth: 96, formatter: fmtDollar0,
         tooltip: 'Gross payoff if SPX drops 40%. Portfolio ~−35%. "Deep crash" scenario (2008-level drawdown).',
       },
       {
-        title: 'SPX −55%', field: 'payoff_crash_55pct_1c', sorter: 'number', width: 90, minWidth: 72, formatter: fmtDollar0,
+        title: 'SPX −55%', field: 'payoff_crash_55pct_1c', sorter: 'number', width: 96, minWidth: 96, formatter: fmtDollar0,
         tooltip: 'Gross payoff if SPX drops 55%. Portfolio ~−49%. "Severe crash" scenario (Great Depression analog).',
       },
     ],
   },
   {
-    title: 'E[Pay]', field: 'e_payoff_roth_1c', sorter: 'number', width: 82, minWidth: 66, formatter: fmtDollar0,
+    title: 'E[Pay]', field: 'e_payoff_roth_1c', sorter: 'number', width: 82, minWidth: 76, formatter: fmtDollar0,
     tooltip: 'Expected payoff = Σ(probability_i × payoff_i) × Roth multiplier. Weighted across all 6 scenarios (bull, flat, bear, crash mild/deep/severe). The 1.25× Roth multiplier reflects that gains in a Roth IRA are tax-free (vs taxable account).',
   },
   {
-    title: 'E[Net]', field: 'e_net_1c', sorter: 'number', width: 82, minWidth: 66, formatter: fmtDollar0,
+    title: 'E[Net]', field: 'e_net_1c', sorter: 'number', width: 82, minWidth: 76, formatter: fmtDollar0,
     tooltip: 'E[Pay] minus Cost 1c. Positive = positive expected value at your assumed crash probability. Most market puts have negative E[Net] at "market-implied" crash probabilities — positive means you believe crashes are underpriced.',
   },
   {
-    title: 'EPR', field: 'EPR', sorter: 'number', width: 74, minWidth: 60, formatter: fmtEPR,
+    title: 'EPR', field: 'EPR', sorter: 'number', width: 66, minWidth: 60, formatter: fmtEPR,
     tooltip: 'Expected Payoff Ratio = E[Pay] / Cost. PRIMARY SORT KEY.\n\n>2.0 (green): excellent value at your crash assumptions\n1.0–2.0 (yellow): break-even to modestly positive\n<1.0: expensive but may still be worth buying for tail protection\n\nEPR > 1.0 means the put is "cheap" relative to your subjective crash probability. Lower P(crash) → lower EPR everywhere.',
   },
   {
-    title: 'CrEff', field: 'crash_efficiency', sorter: 'number', width: 72, minWidth: 56, formatter: fmtCrashEff,
+    title: 'CrEff', field: 'crash_efficiency', sorter: 'number', width: 72, minWidth: 66, formatter: fmtCrashEff,
     tooltip: 'Crash Efficiency = crash-scenario expected payoff (Roth-adjusted) / cost. Same as EPR but counting only the three crash scenarios, ignoring bull/flat/bear. Shows how efficiently this put buys tail protection specifically.',
   },
   {
-    title: 'Ann%', field: 'annual_cost_pct', sorter: 'number', width: 68, minWidth: 54, formatter: fmtPct1,
+    title: 'Ann%', field: 'annual_cost_pct', sorter: 'number', width: 68, minWidth: 62, formatter: fmtPct1,
     tooltip: 'Annualized cost of the full position (N contracts) as % of $5M portfolio = (Cost Nc / portfolio) × (365 / DTE) × 100. Good insurance is typically 0.5–1.5% per year. Above 2% is expensive.',
   },
   {
-    title: 'vs Theo%', field: 'theo_vs_mid_pct', sorter: 'number', width: 85, minWidth: 68, formatter: fmtTheo,
+    title: 'vs Theo%', field: 'theo_vs_mid_pct', sorter: 'number', width: 92, minWidth: 88, formatter: fmtTheo,
     tooltip: "How much you're paying vs CBOE's own theoretical model price. (mid − theo) / theo × 100. Red (>+10%): overpaying. Green (<−10%): cheaper than CBOE model, rare but worth noting. Near 0 is normal for liquid strikes.",
   },
 ];
