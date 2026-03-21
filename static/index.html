@@ -43,25 +43,15 @@
 <h2>What this tool does</h2>
 <p>Fetches the live CBOE SPX options chain (delayed ~15 min), scores every put by <strong>Expected Payoff Ratio (EPR)</strong>, and ranks them so you can find the most efficient tail-hedge contracts for a $5M equity portfolio held in a Roth IRA.</p>
 
-<h2>Parameters</h2>
-<dl>
-  <dt>P(crash)</dt>
-  <dd>Your subjective probability of a ≥20% SPX drawdown over the hold horizon. This is the single biggest lever — raise it if you're bearish, lower it if you're not. Default 0.55.</dd>
-
-  <dt>Horizon (months)</dt>
-  <dd>Your intended hold period. With the <em>survival</em> model, a 6-month put is assigned a lower crash probability than an 18-month put — consistent with the idea that a crash is more likely over 18 months than 6. Horizon does not change which options appear; adjust the DTE filter for that.</dd>
-
-  <dt>Roth multiplier</dt>
-  <dd>Tax advantage of a Roth IRA. A $1 payoff inside a Roth is worth more than $1 in a taxable account because gains are tax-free. At a 20% capital-gains rate, the multiplier is 1.25. Raise this if you're in a higher bracket.</dd>
-
-  <dt>Contracts (0 = auto)</dt>
-  <dd>Number of contracts to buy. 0 lets the tool auto-size based on portfolio beta: N = ($5M × β) / (SPX × 100). At SPX ≈ 6,500 this gives ~7 contracts for a full hedge.</dd>
-
-  <dt>Scenario model</dt>
-  <dd><strong>survival</strong> (default): scales P(crash) to each option's DTE using a constant-hazard formula. Produces the most meaningful cross-expiry EPR comparison.<br>
-  <strong>flat</strong>: applies the same P(crash) to every option regardless of DTE. Useful as a sanity check.<br>
-  <strong>GARCH/EP</strong>: uses the GJR-GARCH + Entropy Pooling model you configure on the Model Builder tab. P(crash) and Horizon inputs are ignored — the model derives its own per-DTE probabilities from 100,000 simulated paths.</dd>
-</dl>
+<h2>Recommended workflow</h2>
+<ol>
+  <li>Open the <strong>Model Builder</strong> tab. The GJR-GARCH simulation starts automatically in the background (~15s). While it loads, you can read the prior drawdown statistics when they appear.</li>
+  <li>Enter your crash probability views in the bucket table (or leave defaults), set the <strong>confidence</strong> slider, and watch the quintile path chart update automatically.</li>
+  <li>Click <strong>Apply to options grid</strong>. This commits the GARCH/EP model and switches the grid to use it — the <em>GARCH/EP</em> scenario model is selected for you.</li>
+  <li>Back on the <strong>Options Grid</strong> tab, adjust <strong>Roth multiplier</strong> and <strong>Contracts</strong> to match your situation, then sort by <strong>EPR</strong>.</li>
+  <li>Check <strong>Sprd%</strong> and <strong>vs Theo%</strong> to filter out illiquid or unreliably-priced contracts.</li>
+  <li>Use <strong>Ann%</strong> to sanity-check total cost. A 1%/yr insurance budget on a $5M portfolio is $50K/yr.</li>
+</ol>
 
 <h2>Grid columns</h2>
 
@@ -77,7 +67,7 @@
 <h3>Market data</h3>
 <dl>
   <dt>Mid</dt><dd>Mid-market price = (bid + ask) / 2, in SPX points. Multiply by 100 for dollar cost per contract.</dd>
-  <dt>Sprd%</dt><dd>Bid-ask spread as % of mid. Above 20% (shown amber) means the mid is unreliable — expect to pay more than mid to fill.</dd>
+  <dt>Sprd%</dt><dd>Bid-ask spread as % of mid. Shown amber above 20% — the mid is unreliable at that width; expect to pay more than mid to fill.</dd>
   <dt>IV</dt><dd>Implied volatility from the CBOE model. Higher IV = more expensive. Compare across strikes and expiries to find relatively cheap contracts.</dd>
   <dt>Delta</dt><dd>$ change in option price per $1 move in SPX. Negative for puts. −0.15 ≈ 15% probability of finishing in-the-money (rough approximation).</dd>
   <dt>Theta/d</dt><dd>Daily time decay in dollars per contract. LEAPS have slow theta — a key advantage for set-and-forget hedges.</dd>
@@ -92,60 +82,80 @@
 </dl>
 
 <h3>Scenario payoffs</h3>
-<p>These three columns show the <em>gross payoff per contract</em> (before subtracting cost) if SPX falls by the stated amount from today's level. They are deterministic — no probability weighting.</p>
+<p>Gross payoff per contract if SPX falls by the stated amount from today's level. Deterministic — no probability weighting.</p>
 <dl>
-  <dt>SPX −25%</dt><dd>Payoff if SPX drops 25%. Your $5M portfolio would drop ~22% (beta-adjusted). "Mild crash" scenario.</dd>
-  <dt>SPX −40%</dt><dd>Payoff if SPX drops 40%. "Deep crash" — roughly 2008-level drawdown.</dd>
-  <dt>SPX −55%</dt><dd>Payoff if SPX drops 55%. "Severe crash" — Great Depression / dot-com combined scale. Most OTM puts pay nothing here unless the strike is well below current levels.</dd>
+  <dt>SPX −25%</dt><dd>"Mild crash" — your $5M portfolio would drop ~22% beta-adjusted.</dd>
+  <dt>SPX −40%</dt><dd>"Deep crash" — roughly 2008-level drawdown.</dd>
+  <dt>SPX −55%</dt><dd>"Severe crash" — Great Depression / dot-com scale. Deeply OTM puts may pay nothing at −25% but a large multiple of cost at −55%.</dd>
 </dl>
 
 <h3>Expected value metrics</h3>
 <dl>
   <dt>E[Pay]</dt>
-  <dd>Probability-weighted expected payoff across all scenarios, Roth-adjusted. Formula: Σ(P<sub>i</sub> × payoff<sub>i</sub>) × Roth multiplier. This is what the put is "worth" to you given your crash beliefs.</dd>
+  <dd>Probability-weighted expected payoff across all scenarios, Roth-adjusted: Σ(P<sub>i</sub> × payoff<sub>i</sub>) × Roth multiplier. This is what the put is "worth" to you given your probability model.</dd>
 
   <dt>E[Net]</dt>
-  <dd>E[Pay] minus Cost 1c. Positive means the put has positive expected value at your assumed crash probability. Most market puts have negative E[Net] at market-implied crash probabilities — a positive value means you believe crashes are underpriced by the market.</dd>
+  <dd>E[Pay] minus Cost 1c. Positive = positive expected value at your assumed probabilities. Most market puts have negative E[Net] at market-implied crash probabilities; a positive value means you believe crashes are underpriced.</dd>
 
-  <dt>EPR — Expected Payoff Ratio <em>(primary sort key)</em></dt>
-  <dd>E[Pay] / Cost. The main ranking signal.
+  <dt>EPR <em>(primary sort key)</em></dt>
+  <dd>Expected Payoff Ratio = E[Pay] / Cost. The main ranking signal.
     <ul>
-      <li><strong>&gt; 2.0</strong> (green): excellent value at your crash assumptions — you're getting more than $2 of expected payoff per $1 spent</li>
+      <li><strong>&gt; 2.0</strong> (green): excellent value — more than $2 of expected payoff per $1 spent</li>
       <li><strong>1.0 – 2.0</strong> (yellow): break-even to modestly positive</li>
-      <li><strong>&lt; 1.0</strong>: expensive relative to your beliefs, but may still be worth buying for pure tail protection</li>
+      <li><strong>&lt; 1.0</strong>: expensive relative to your model, but may still be worth buying for pure tail protection</li>
     </ul>
-    A higher P(crash) shifts EPR up for all puts. EPR is most useful for <em>comparing puts against each other</em> — the absolute level depends on your inputs.
+    EPR is most useful for <em>comparing puts against each other</em> — the absolute level depends on your probability inputs.
   </dd>
 
-  <dt>CrEff — Crash Efficiency</dt>
-  <dd>Same formula as EPR, but only the crash scenarios contribute to the numerator (bull/flat/bear scenarios are excluded). This answers: <em>"How efficiently does this put buy crash protection specifically?"</em> A put deep OTM will have high CrEff (it only pays in a real crash) but low EPR (the crash scenarios don't dominate the total). A put closer to ATM has higher EPR but lower CrEff. Use CrEff when you care about pure tail protection rather than overall expected value.</dd>
+  <dt>CrEff</dt>
+  <dd>Crash Efficiency — same as EPR but only counting crash scenarios in the numerator (bull/flat/bear excluded). Answers: <em>"how efficiently does this put buy crash protection specifically?"</em> A deeply OTM put has high CrEff (only pays in a real crash) but lower EPR. A put closer to the money has higher EPR but lower CrEff. Use CrEff when you care primarily about tail protection rather than overall expected value.</dd>
 </dl>
 
 <h3>Cost metrics</h3>
 <dl>
   <dt>Ann%</dt>
-  <dd>Annualized cost of the full position (N contracts) as % of the $5M portfolio = (Cost Nc / $5M) × (365 / DTE) × 100. Good tail insurance typically runs 0.5–1.5%/yr. Above 2% is expensive for a set-and-forget hedge.</dd>
+  <dd>Annualized cost of the full position as % of the $5M portfolio = (Cost Nc / $5M) × (365 / DTE) × 100. Good tail insurance typically runs 0.5–1.5%/yr. Above 2% is expensive for a set-and-forget hedge.</dd>
 
   <dt>vs Theo%</dt>
-  <dd>How much you're paying vs CBOE's own theoretical (Black-Scholes-style) model price: (mid − theo) / theo × 100.
+  <dd>How much you're paying vs CBOE's own theoretical model price: (mid − theo) / theo × 100.
     <ul>
-      <li><strong>Red (&gt;+10%)</strong>: you're overpaying relative to CBOE's model — wide spread or stale quote</li>
-      <li><strong>Near 0</strong>: normal for liquid strikes</li>
-      <li><strong>Green (&lt;−10%)</strong>: cheaper than CBOE's model, rare but worth noting</li>
+      <li><strong style="color:var(--danger)">&gt;+10%</strong>: overpaying relative to CBOE's model — wide spread or stale quote</li>
+      <li>Near 0: normal for liquid strikes</li>
+      <li><strong style="color:var(--good)">&lt;−10%</strong>: cheaper than CBOE's model, rare but worth noting</li>
     </ul>
   </dd>
 </dl>
 
-<h2>How to use the rankings</h2>
-<ol>
-  <li>Set your <strong>P(crash)</strong> and <strong>Roth multiplier</strong> to match your beliefs and tax situation.</li>
-  <li>Sort by <strong>EPR</strong> (default). The top rows are the most cost-efficient puts given your assumptions.</li>
-  <li>Check <strong>Sprd%</strong> — avoid anything above 20% unless liquidity is acceptable.</li>
-  <li>Check <strong>vs Theo%</strong> — large positive values suggest the mid is unreliable.</li>
-  <li>Use <strong>Ann%</strong> to sanity-check total cost. A 1%/yr insurance budget on a $5M portfolio is $50K/yr.</li>
-  <li>Compare <strong>CrEff</strong> if you want pure crash protection and are less concerned with the non-crash scenarios.</li>
-  <li>For a more rigorous probability model, configure the <strong>Model Builder</strong> tab with GJR-GARCH + Entropy Pooling, then select <em>GARCH/EP</em> as the scenario model.</li>
-</ol>
+<h2>Filters</h2>
+<dl>
+  <dt>DTE min / max</dt><dd>Filter by days to expiration. Default 180–540 (6–18 months). Widen to see shorter-dated puts, which are cheaper but require more frequent rolling.</dd>
+  <dt>OI min</dt><dd>Minimum open interest. Default 100. Raise to 500+ if you want only the most liquid strikes.</dd>
+  <dt>Vol min</dt><dd>Minimum today's volume. Useful for confirming that a mid-price reflects real trading, but LEAPS often trade lightly — set to 0 unless you need same-day fills.</dd>
+  <dt>OTM% min / max</dt><dd>Filter by how far out of the money the strike is. Default max is 0% (puts only — all below spot). Set min to e.g. −30% to exclude very deep strikes; set max to e.g. −10% to exclude near-the-money puts.</dd>
+  <dt>Session</dt><dd>AM = standard SPX (cash-settled at open). PM = SPXW weekly (settled at close). AM is generally preferred for multi-month holds to avoid close-of-day gamma risk near expiry.</dd>
+</dl>
+
+<h2>Scenario model and probability inputs</h2>
+<p>The <strong>Scenario model</strong> selector controls how crash probabilities are assigned to each option. The <strong>GARCH/EP</strong> model (default) is the most rigorous option and is configured on the Model Builder tab — when it is active, the <em>P(crash)</em> and <em>Horizon</em> inputs have no effect and are greyed out.</p>
+<p>If you prefer a simpler approach without running the GARCH model, you can switch to one of the two manual models:</p>
+<dl>
+  <dt>survival</dt>
+  <dd>You specify P(crash) and Horizon. The model scales the crash probability to each option's DTE using a constant-hazard (Poisson) formula: a 6-month put is assigned a lower P(crash) than an 18-month put, proportional to the time window. This is the most defensible simple approach for cross-expiry comparison.</dd>
+  <dt>flat</dt>
+  <dd>The same P(crash) is applied to every option regardless of DTE. Useful as a reference or when you want to directly state a probability for a specific expiry window.</dd>
+  <dt>P(crash)</dt>
+  <dd><em>(survival and flat models only)</em> Your subjective probability of a ≥20% SPX drawdown over the hold Horizon. Default 0.55. The single biggest lever — raise it if you're bearish.</dd>
+  <dt>Horizon (months)</dt>
+  <dd><em>(survival model only)</em> The reference window over which your P(crash) is stated. A 6-month put in a 18-month horizon gets a lower crash probability than an 18-month put. Does not affect which options appear — use the DTE filter for that.</dd>
+</dl>
+
+<h2>Other parameters</h2>
+<dl>
+  <dt>Roth multiplier</dt>
+  <dd>Tax advantage of a Roth IRA. A $1 payoff inside a Roth is worth more than $1 in a taxable account because gains are tax-free. At a 20% capital-gains rate, the multiplier is 1.25. Raise if you're in a higher bracket.</dd>
+  <dt>Contracts (0 = auto)</dt>
+  <dd>Number of contracts to buy. 0 auto-sizes from portfolio beta: N = ($5M × β) / (SPX × 100). At SPX ≈ 6,500 this gives ~7 contracts for a full hedge.</dd>
+</dl>
 
     </div>
   </div>
@@ -216,9 +226,9 @@ survival (default): P(crash in d days) = 1 − (1−p_crash)^(d/H). A 6-month pu
 flat (original): same P(crash) applied to every option regardless of DTE. Useful as a reference or when you want to state a DTE-specific probability directly.">?</span>
         </span>
         <select id="modelSelect">
-          <option value="survival" selected>survival (DTE-scaled)</option>
+          <option value="survival">survival (DTE-scaled)</option>
           <option value="flat">flat (original)</option>
-          <option value="garch_ep">GARCH/EP (model builder)</option>
+          <option value="garch_ep" selected>GARCH/EP (model builder)</option>
         </select>
         <span class="ctrl-hint">how P(crash) scales with DTE</span>
       </label>
@@ -388,9 +398,9 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
           <span class="help-tip" title="0 = pure GARCH prior (your buckets ignored). 1 = views fully imposed. Values between blend the two. Start at 1.0 and reduce if the EP solution looks too extreme.">?</span>
         </div>
         <div class="slider-row">
-          <input type="range" id="mbConfidence" min="0" max="1" step="0.05" value="1.0"
+          <input type="range" id="mbConfidence" min="0" max="1" step="0.05" value="0.75"
                  oninput="mbConfidenceDisplay.textContent=parseFloat(this.value).toFixed(2); mbSchedulePreview()">
-          <span id="mbConfidenceDisplay" class="slider-val">1.00</span>
+          <span id="mbConfidenceDisplay" class="slider-val">0.75</span>
         </div>
       </div>
 

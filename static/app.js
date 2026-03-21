@@ -44,7 +44,7 @@ function getParams() {
     horizon:         numVal('horizon',  18),
     roth_multiplier: numVal('rothMult', 1.25),
     contracts:       numVal('contracts',0),
-    model:           $('modelSelect')?.value || 'survival',
+    model:           $('modelSelect')?.value || 'garch_ep',
   };
 }
 
@@ -135,8 +135,9 @@ function fmtTheo(cell) {
   const v = cell.getValue();
   if (v == null) return na();
   const el = cell.getElement();
-  el.classList.toggle('cell-warn', v > 10);
-  el.classList.toggle('cell-good', v < -10);
+  if (v > 10)       { el.style.color = 'var(--danger)'; el.style.fontWeight = ''; }
+  else if (v < -10) { el.style.color = 'var(--good)';   el.style.fontWeight = '600'; }
+  else              { el.style.color = '';               el.style.fontWeight = ''; }
   return v.toFixed(1) + '%';
 }
 

@@ -126,7 +126,7 @@ def api_options():
     roth_multiplier = _float("roth_multiplier",  1.25,   1.0,  3.0)
     contracts       = _int  ("contracts",           0,     0, 100)
     force_refresh   = request.args.get("force_refresh", "false").lower() == "true"
-    model_name      = request.args.get("model", DEFAULT_MODEL)
+    model_name      = request.args.get("model", "garch_ep")
     if model_name not in SCENARIO_MODELS:
         model_name = DEFAULT_MODEL
 
