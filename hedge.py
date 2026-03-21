@@ -57,6 +57,10 @@ class Params:
         ("bear", -0.12, 0.25),
     ])
 
+    # Target index (for non-SPX options via beta adjustment)
+    symbol: str = "SPX"
+    index_beta: float = 1.0     # how much target index falls per 1.0 SPX fall in a crash
+
     # Roth / tax
     roth_multiplier: float = 1.25
 
@@ -195,8 +199,8 @@ def score_puts(
     sample_scenarios = model(p, sample_dte)
 
     for s in sample_scenarios:
-        spx_terminal = spx_spot * (1 + s.spx_return)
-        payoff = (df["strike"] - spx_terminal).clip(lower=0) * 100
+        index_terminal = spx_spot * (1 + s.spx_return * p.index_beta)
+        payoff = (df["strike"] - index_terminal).clip(lower=0) * 100
         df[f"payoff_{s.name}_1c"] = payoff.round(2)
 
     # ------------------------------------------------------------------

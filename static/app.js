@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260321b');
+console.log('app.js v20260321c');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -39,13 +39,18 @@ function numVal(elemId, fallback) {
   return isNaN(v) ? fallback : v;
 }
 
+// Default crash-beta by symbol (crash-weighted, not market beta)
+const SYMBOL_BETA_DEFAULTS = { SPX:1.0, SPY:1.0, QQQ:1.3, NDX:1.3, RUT:0.85, IWM:0.85 };
+
 function getParams() {
   return {
     p_crash:         numVal('pCrash',   0.55),
     horizon:         numVal('horizon',  18),
     roth_multiplier: numVal('rothMult', 1.25),
     contracts:       numVal('contracts',0),
-    model:           $('modelSelect')?.value || 'garch_ep',
+    model:           $('modelSelect')?.value  || 'garch_ep',
+    symbol:          $('symbolSelect')?.value || 'SPX',
+    index_beta:      numVal('indexBeta', 1.0),
   };
 }
 
@@ -307,6 +312,8 @@ async function fetchOptions(forceRefresh = false) {
     roth_multiplier: p.roth_multiplier,
     contracts:       p.contracts,
     model:           p.model,
+    symbol:          p.symbol,
+    index_beta:      p.index_beta,
     force_refresh:   forceRefresh,
   });
 
@@ -420,6 +427,7 @@ function updateMeta() {
   const m = state.meta;
   if (!m) return;
 
+  setText('metaSymbolLabel', m.symbol || 'SPX');
   setText('metaSpot',      m.spx_spot      ? '$' + Number(m.spx_spot).toLocaleString()         : '—');
   setText('metaIV30',      m.iv30          ? m.iv30.toFixed(1) + '%'                           : '—');
   setText('metaN',         m.n_contracts   ? m.n_contracts + ' contracts'                       : '—');
@@ -930,6 +938,15 @@ document.addEventListener('DOMContentLoaded', () => {
     debouncedFetch();
   });
   updateGarchDisabledState();
+
+  // Symbol change: auto-fill crash-beta default, then re-fetch
+  $('symbolSelect')?.addEventListener('change', () => {
+    const sym    = $('symbolSelect').value;
+    const betaEl = $('indexBeta');
+    if (betaEl) betaEl.value = SYMBOL_BETA_DEFAULTS[sym] ?? 1.0;
+    debouncedFetch();
+  });
+  $('indexBeta')?.addEventListener('input', debouncedFetch);
 
   // Filter inputs → instant client-side filter
   ['dteMin', 'dteMax', 'oiMin', 'volMin', 'moneynessMin', 'moneynessMax'].forEach(id => {

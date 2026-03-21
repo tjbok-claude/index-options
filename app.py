@@ -40,13 +40,9 @@ def no_cache_static(response):
     return response
 
 # ---------------------------------------------------------------------------
-# In-memory CBOE cache — 60-second TTL
+# In-memory CBOE cache — 60-second TTL, keyed by symbol
 # ---------------------------------------------------------------------------
-_cache: dict = {
-    "df":         None,
-    "underlying": None,
-    "fetched_at": None,
-}
+_cache: dict = {}   # symbol -> {"df": ..., "underlying": ..., "fetched_at": ...}
 _cache_lock = threading.Lock()
 CACHE_TTL_SEC = 60
 
@@ -146,10 +142,14 @@ def api_options():
     horizon_months  = _int  ("horizon",            18,     1, 60)
     roth_multiplier = _float("roth_multiplier",  1.25,   1.0,  3.0)
     contracts       = _int  ("contracts",           0,     0, 100)
+    index_beta      = _float("index_beta",         1.0,   0.1,  5.0)
     force_refresh   = request.args.get("force_refresh", "false").lower() == "true"
     model_name      = request.args.get("model", "garch_ep")
     if model_name not in SCENARIO_MODELS:
         model_name = DEFAULT_MODEL
+    symbol = request.args.get("symbol", "SPX").upper()
+    if symbol not in KNOWN_SYMBOLS:
+        symbol = "SPX"
 
     p = Params(
         p_crash=p_crash,
@@ -157,31 +157,33 @@ def api_options():
         horizon_months=horizon_months,
         roth_multiplier=roth_multiplier,
         contracts=contracts,
+        symbol=symbol,
+        index_beta=index_beta,
     )
 
-    # --- Fetch CBOE data (cached) ---
+    # --- Fetch CBOE data (cached per symbol) ---
     with _cache_lock:
-        now = time.time()
+        now   = time.time()
+        entry = _cache.get(symbol, {})
         stale = (
-            _cache["fetched_at"] is None
-            or (now - _cache["fetched_at"]) > CACHE_TTL_SEC
+            entry.get("fetched_at") is None
+            or (now - entry["fetched_at"]) > CACHE_TTL_SEC
         )
 
         if stale or force_refresh:
             try:
-                raw = fetch_chain(KNOWN_SYMBOLS["SPX"])
-                df_full, underlying = parse_chain(raw, base_symbol="SPX")
-                _cache["df"]         = df_full
-                _cache["underlying"] = underlying
-                _cache["fetched_at"] = now
+                raw = fetch_chain(KNOWN_SYMBOLS[symbol])
+                df_full, underlying = parse_chain(raw, base_symbol=symbol)
+                _cache[symbol] = {"df": df_full, "underlying": underlying, "fetched_at": now}
             except Exception as exc:
-                if _cache["df"] is None:
+                if entry.get("df") is None:
                     return jsonify({"error": "CBOE fetch failed", "detail": str(exc)}), 502
                 # Fall through with stale data on transient errors
 
-        df_full    = _cache["df"]
-        underlying = _cache["underlying"]
-        fetched_at = _cache["fetched_at"]
+        entry      = _cache.get(symbol, {})
+        df_full    = entry.get("df")
+        underlying = entry.get("underlying")
+        fetched_at = entry.get("fetched_at")
 
     # --- Filter & score ---
     spx_spot    = underlying["current_price"]
@@ -237,7 +239,7 @@ def api_model_status():
     stale = False
     if meta and cache:
         with _cache_lock:
-            spot = (_cache["underlying"] or {}).get("current_price")
+            spot = (_cache.get("SPX", {}).get("underlying") or {}).get("current_price")
         if spot and abs(spot - cache.current_price) / cache.current_price > 0.02:
             stale = True
     return jsonify({
@@ -259,7 +261,7 @@ def api_model_reinit():
     drift = body.get("annual_drift_pct")
     annual_drift_pct = float(drift) if drift is not None else None
     with _cache_lock:
-        spot = (_cache["underlying"] or {}).get("current_price")
+        spot = (_cache.get("SPX", {}).get("underlying") or {}).get("current_price")
     start_garch_init(spot, annual_drift_pct=annual_drift_pct)
     return jsonify({"ok": True, "started_with_price": spot or _GARCH_DEFAULT_PRICE,
                     "annual_drift_pct": annual_drift_pct})
@@ -348,7 +350,8 @@ def api_model_commit():
 @app.route("/api/health")
 def api_health():
     with _cache_lock:
-        fa = _cache["fetched_at"]
+        spx_entry = _cache.get("SPX", {})
+        fa  = spx_entry.get("fetched_at")
         age = round(time.time() - fa, 1) if fa else None
     return jsonify({"status": "ok", "cache_age_sec": age})
 
@@ -365,6 +368,8 @@ def _build_meta(underlying, spx_spot, n_contracts, p, n_passed, n_filtered, fetc
         "model": model_name,
         "garch_ep_meta": garch_meta,
         "garch_loading": garch_loading,
+        "symbol":        p.symbol,
+        "index_beta":    p.index_beta,
         "spx_spot":      _sf(spx_spot, 2),
         "n_contracts":   int(n_contracts),
         "total_budget":  _sf(p.total_budget, 0),
