@@ -13,6 +13,7 @@ Usage:
 import math
 import threading
 import time
+import webbrowser
 from datetime import datetime
 
 import numpy as np
@@ -409,4 +410,5 @@ def _to_records(df: pd.DataFrame) -> list:
 
 if __name__ == "__main__":
     print("SPX Hedge Ranker  =>  http://localhost:5000")
+    webbrowser.open("http://localhost:5000")
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

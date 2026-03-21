@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260321');
+console.log('app.js v20260321b');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -327,6 +327,11 @@ async function fetchOptions(forceRefresh = false) {
     applyFilters();
     updateMeta();
     setStatus('');
+    // Hide overlay once GARCH/EP results are actually being used
+    if (state.meta && $('modelSelect')?.value === 'garch_ep') {
+      const garchReady = !state.meta.garch_loading && state.meta.garch_ep_meta != null;
+      if (garchReady) showGridOverlay(false);
+    }
   } catch (err) {
     showError(err.message);
     setStatus('');
@@ -386,6 +391,15 @@ function updateGarchDisabledState() {
     if (!el) return;
     el.closest('.ctrl').classList.toggle('ctrl-disabled', isGarch);
   });
+}
+
+function showGridOverlay(show) {
+  const overlay = $('gridLoadOverlay');
+  const grid    = $('grid');
+  if (!overlay || !grid) return;
+  overlay.style.display = show ? 'flex' : 'none';
+  grid.style.display    = show ? 'none' : '';
+  if (!show) setGridHeight();
 }
 
 function showError(msg) {
@@ -912,6 +926,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   $('modelSelect')?.addEventListener('change', () => {
     updateGarchDisabledState();
+    if ($('modelSelect').value !== 'garch_ep') showGridOverlay(false);
     debouncedFetch();
   });
   updateGarchDisabledState();
@@ -933,6 +948,9 @@ document.addEventListener('DOMContentLoaded', () => {
   mbStatusTimer = 0;  // sentinel
   mbPollStatus();
 
-  // Auto-fetch on load
+  // Show overlay if GARCH/EP is active — grid will appear once model is ready
+  if ($('modelSelect')?.value === 'garch_ep') showGridOverlay(true);
+
+  // Auto-fetch on load (warms CBOE cache; grid revealed once GARCH is ready)
   fetchOptions(true);
 });

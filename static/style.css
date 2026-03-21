@@ -428,6 +428,25 @@ header {
   overflow:   hidden;
 }
 
+/* ── Grid load overlay ──────────────────────────────────────────────────── */
+.grid-load-overlay {
+  flex:            1;
+  display:         flex;
+  align-items:     center;
+  justify-content: center;
+  gap:             10px;
+  color:           var(--text-muted);
+  font-size:       13px;
+  background:      var(--bg);
+  min-height:      0;
+}
+.grid-load-overlay .spinner {
+  width:            14px;
+  height:           14px;
+  border-color:     rgba(255,255,255,0.12);
+  border-top-color: var(--text-dim);
+}
+
 /* ── Legend ─────────────────────────────────────────────────────────────── */
 .legend {
   display:       flex;
@@ -862,6 +881,7 @@ header {
 /* ── Prior stats table ───────────────────────────────────────────────────── */
 .prior-table {
   width:           100%;
+  max-width:       480px;
   border-collapse: collapse;
   font-size:       12px;
 }
@@ -897,7 +917,7 @@ header {
   border-radius: 6px;
   padding:    8px;
 }
-.chart-wrap-short { height: 220px; }
+.chart-wrap-short { height: 220px; max-width: 560px; }
 
 .decile-weights {
   display:    flex;
