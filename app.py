@@ -25,6 +25,18 @@ from scenarios import DEFAULT_MODEL, SCENARIO_MODELS, get_model
 
 app = Flask(__name__, static_folder="static")
 
+# Default EP view buckets — must match DEFAULT_BUCKETS in static/app.js
+_DEFAULT_EP_BUCKETS = [(3475, 0.10), (4170, 0.25), (4860, 0.50), (5560, 0.70), (6250, 0.90)]
+_DEFAULT_EP_CONFIDENCE = 0.75
+
+
+@app.after_request
+def no_cache_static(response):
+    """Prevent browsers from caching static assets so JS/CSS changes take effect immediately."""
+    if request.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 # ---------------------------------------------------------------------------
 # In-memory CBOE cache — 60-second TTL
 # ---------------------------------------------------------------------------
@@ -60,9 +72,12 @@ def _garch_init_worker(price: float, annual_drift_pct: float | None = None) -> N
         _garch_state["model"] = None
     try:
         cache = GARCHPathCache(price, annual_drift_pct=annual_drift_pct)
-        # Auto-create a pure-GARCH default model (no EP) so the options grid
-        # works immediately after startup without requiring a manual commit.
-        default_model = cache.make_model()   # tail_tilt=1.0, confidence=1.0
+        # Auto-create a default EP model matching the UI's default parameters
+        # so the grid shows the same results as clicking Apply without changes.
+        default_model = cache.make_model(
+            view_buckets=_DEFAULT_EP_BUCKETS,
+            confidence_level=_DEFAULT_EP_CONFIDENCE,
+        )
         with _garch_lock:
             _garch_state["cache"] = cache
             _garch_state["model"] = default_model
