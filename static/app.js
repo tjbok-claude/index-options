@@ -261,7 +261,7 @@ function initTable() {
   table = new Tabulator('#grid', {
     data:                 [],
     columns:              COLUMNS,
-    layout:               'fitDataStretch',
+    layout:               'fitColumns',
     renderVertical:       'virtual',
     height:               initialH + 'px',
     rowFormatter:         rowFormatter,
@@ -905,8 +905,12 @@ document.addEventListener('DOMContentLoaded', () => {
   $('toggleParams')?.addEventListener('click', () => togglePanel('paramPanel', 'toggleParams'));
   $('toggleFilters')?.addEventListener('click', () => togglePanel('filterPanel', 'toggleFilters'));
 
-  // Model builder: render default buckets
+  // Model builder: render default buckets and start GARCH status polling
+  // immediately (not just when the tab is opened) so the grid auto-updates
+  // once GARCH finishes loading, even if the user never visits that tab.
   mbRenderBuckets(DEFAULT_BUCKETS);
+  mbStatusTimer = 0;  // sentinel
+  mbPollStatus();
 
   // Auto-fetch on load
   fetchOptions(true);
