@@ -267,7 +267,6 @@ function initTable() {
     initialSort:          [{ column: 'EPR', dir: 'desc' }],
     placeholder:          "Click 'Fetch Live Data' to load the SPX options chain.",
     columnHeaderSortMulti: false,
-    headerWordWrap:        true,
     movableColumns:        true,
   });
 
@@ -408,7 +407,7 @@ function updateMeta() {
   if (!m) return;
 
   setText('metaSpot',      m.spx_spot      ? '$' + Number(m.spx_spot).toLocaleString()         : '—');
-  setText('metaIV30',      m.iv30          ? (m.iv30 * 100).toFixed(1) + '%'                   : '—');
+  setText('metaIV30',      m.iv30          ? m.iv30.toFixed(1) + '%'                           : '—');
   setText('metaN',         m.n_contracts   ? m.n_contracts + ' contracts'                       : '—');
   setText('metaTimestamp', m.cboe_timestamp || '—');
   setText('metaFiltered',  m.n_filtered != null ? m.n_filtered.toLocaleString() + ' filtered out' : '—');

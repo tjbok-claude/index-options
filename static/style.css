@@ -502,12 +502,19 @@ header {
   font-size:   10px !important;
   border-right: 1px solid var(--border) !important;
 }
-/* Word-wrap long column titles (requires headerWordWrap:true in Tabulator config) */
+/* Word-wrap long column titles */
 .tabulator .tabulator-header .tabulator-col .tabulator-col-content .tabulator-col-title {
+  white-space: normal    !important;
+  text-overflow: clip    !important;
+  overflow: hidden       !important;
   line-height: 1.3;
 }
 /* Hide sort arrows — active sort shown in status bar instead */
 .tabulator-col-sorter { display: none !important; }
+/* Remove the right padding Tabulator reserves for the hidden sort arrow */
+.tabulator .tabulator-header .tabulator-col .tabulator-col-content {
+  padding-right: 4px !important;
+}
 
 /* Rows */
 .tabulator-row {
