@@ -7,6 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
+console.log('app.js v20260321');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
