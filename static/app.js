@@ -134,10 +134,8 @@ function fmtCrashEff(cell) {
 function fmtTheo(cell) {
   const v = cell.getValue();
   if (v == null) return na();
-  const el = cell.getElement();
-  if (v > 10)       { el.style.color = 'var(--danger)'; el.style.fontWeight = ''; }
-  else if (v < -10) { el.style.color = 'var(--good)';   el.style.fontWeight = '600'; }
-  else              { el.style.color = '';               el.style.fontWeight = ''; }
+  if (v > 10)  return `<span style="color:var(--danger)">${v.toFixed(1)}%</span>`;
+  if (v < -10) return `<span style="color:var(--good);font-weight:600">${v.toFixed(1)}%</span>`;
   return v.toFixed(1) + '%';
 }
 
@@ -268,7 +266,8 @@ function initTable() {
     initialSort:          [{ column: 'EPR', dir: 'desc' }],
     placeholder:          "Click 'Fetch Live Data' to load the SPX options chain.",
     columnHeaderSortMulti: false,
-    movableColumns:       true,
+    headerWordWrap:        true,
+    movableColumns:        true,
   });
 
   table.on('dataSorted', (sorters) => {
