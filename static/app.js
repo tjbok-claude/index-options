@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260321c');
+console.log('app.js v20260321d');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -305,6 +305,9 @@ async function fetchOptions(forceRefresh = false) {
   if (state.loading) return;
   setLoading(true, 'Connecting to server…');
 
+  // Show overlay while a forced refresh loads (gives clear visual feedback)
+  if (forceRefresh) showGridOverlay(true);
+
   const p  = getParams();
   const qs = new URLSearchParams({
     p_crash:         p.p_crash,
@@ -318,7 +321,7 @@ async function fetchOptions(forceRefresh = false) {
   });
 
   try {
-    setStatus('Fetching SPX chain from CBOE…');
+    setStatus(`Fetching ${p.symbol} chain from CBOE…`);
     const resp = await fetch(`${API_URL}?${qs}`);
     const json = await resp.json();
 
@@ -334,14 +337,19 @@ async function fetchOptions(forceRefresh = false) {
     applyFilters();
     updateMeta();
     setStatus('');
-    // Hide overlay once GARCH/EP results are actually being used
-    if (state.meta && $('modelSelect')?.value === 'garch_ep') {
-      const garchReady = !state.meta.garch_loading && state.meta.garch_ep_meta != null;
-      if (garchReady) showGridOverlay(false);
+
+    // Hide overlay:
+    // - On initial load with garch_ep: only once garch_ep data is truly ready
+    // - After that (or for other models): always hide after fetch completes
+    const model      = $('modelSelect')?.value;
+    const garchReady = state.meta && !state.meta.garch_loading && state.meta.garch_ep_meta != null;
+    if (_garchGridRevealed || model !== 'garch_ep' || garchReady) {
+      showGridOverlay(false);
     }
   } catch (err) {
     showError(err.message);
     setStatus('');
+    showGridOverlay(false);  // don't leave grid hidden on error
   } finally {
     setLoading(false);
   }
@@ -400,13 +408,15 @@ function updateGarchDisabledState() {
   });
 }
 
+let _garchGridRevealed = false;  // true once grid is first shown with real garch_ep data
+
 function showGridOverlay(show) {
   const overlay = $('gridLoadOverlay');
   const grid    = $('grid');
   if (!overlay || !grid) return;
   overlay.style.display = show ? 'flex' : 'none';
   grid.style.display    = show ? 'none' : '';
-  if (!show) setGridHeight();
+  if (!show) { _garchGridRevealed = true; setGridHeight(); }
 }
 
 function showError(msg) {
@@ -939,12 +949,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   updateGarchDisabledState();
 
-  // Symbol change: auto-fill crash-beta default, then re-fetch
+  // Symbol change: auto-fill crash-beta default, show overlay immediately, force-fetch
   $('symbolSelect')?.addEventListener('change', () => {
     const sym    = $('symbolSelect').value;
     const betaEl = $('indexBeta');
     if (betaEl) betaEl.value = SYMBOL_BETA_DEFAULTS[sym] ?? 1.0;
-    debouncedFetch();
+    showGridOverlay(true);
+    fetchOptions(true);
   });
   $('indexBeta')?.addEventListener('input', debouncedFetch);
 
