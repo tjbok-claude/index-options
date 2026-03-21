@@ -777,6 +777,13 @@ header {
   transition:    border-color 0.15s;
 }
 .bucket-table input:focus { border-color: var(--accent); }
+.bucket-table .bk-move {
+  color:      var(--text-dim);
+  font-size:  11px;
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 8px;
+}
 .bucket-table .del-btn {
   background:    none;
   border:        none;

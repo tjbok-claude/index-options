@@ -499,6 +499,13 @@ let mbLastPreview  = null;
 
 // ── Bucket table ─────────────────────────────────────────────────────────
 
+function mbMovePct(level) {
+  const spot = mbLastPreview?.current_price;
+  if (!spot || isNaN(level)) return '—';
+  const pct = (level / spot - 1) * 100;
+  return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+}
+
 function mbRenderBuckets(rows) {
   const tbody = $('bucketBody');
   tbody.innerHTML = '';
@@ -506,11 +513,25 @@ function mbRenderBuckets(rows) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><input type="number" class="bk-level" data-i="${i}" value="${row[0]}" step="25"
-                 oninput="mbOnBucketChange()" onblur="mbSortBuckets()"></td>
+                 oninput="mbUpdateMove(this); mbOnBucketChange()" onblur="mbSortBuckets()"></td>
+      <td class="bk-move">${mbMovePct(row[0])}</td>
       <td><input type="number" class="bk-prob"  data-i="${i}" value="${row[1]}" step="0.05" min="0" max="1"
                  oninput="mbOnBucketChange()"></td>
       <td><button class="del-btn" onclick="mbDeleteRow(${i})">×</button></td>`;
     tbody.appendChild(tr);
+  });
+}
+
+function mbUpdateMove(input) {
+  const td = input.closest('tr').querySelector('.bk-move');
+  if (td) td.textContent = mbMovePct(parseFloat(input.value));
+}
+
+function mbRefreshMoveCells() {
+  document.querySelectorAll('#bucketBody tr').forEach(tr => {
+    const input = tr.querySelector('.bk-level');
+    const td    = tr.querySelector('.bk-move');
+    if (input && td) td.textContent = mbMovePct(parseFloat(input.value));
   });
 }
 
@@ -630,6 +651,7 @@ async function mbPreview() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
     mbLastPreview = data;
+    mbRefreshMoveCells();
     mbRenderPreview(data, buckets);
     if (statusEl) statusEl.textContent = '';
   } catch (err) {
