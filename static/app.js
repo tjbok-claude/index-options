@@ -376,6 +376,9 @@ function setStatus(msg) {
   el.style.display = msg ? 'inline' : 'none';
 }
 
+function showHelp() { $('helpModal').style.display = 'flex'; }
+function hideHelp() { $('helpModal').style.display = 'none'; }
+
 function updateGarchDisabledState() {
   const isGarch = $('modelSelect')?.value === 'garch_ep';
   ['pCrash', 'horizon'].forEach(id => {
@@ -851,6 +854,10 @@ function mbOnShow() {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideHelp();
+});
+
 document.addEventListener('DOMContentLoaded', () => {
   // Verify Tabulator loaded
   if (typeof Tabulator === 'undefined') {
