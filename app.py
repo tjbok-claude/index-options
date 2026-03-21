@@ -60,8 +60,12 @@ def _garch_init_worker(price: float, annual_drift_pct: float | None = None) -> N
         _garch_state["model"] = None
     try:
         cache = GARCHPathCache(price, annual_drift_pct=annual_drift_pct)
+        # Auto-create a pure-GARCH default model (no EP) so the options grid
+        # works immediately after startup without requiring a manual commit.
+        default_model = cache.make_model()   # tail_tilt=1.0, confidence=1.0
         with _garch_lock:
             _garch_state["cache"] = cache
+            _garch_state["model"] = default_model
             _garch_state["loading"] = False
         label = (f"{annual_drift_pct:.1f}%/yr override"
                  if annual_drift_pct is not None

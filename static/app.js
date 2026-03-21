@@ -548,7 +548,8 @@ function mbOnBucketChange() { mbSchedulePreview(); }
 
 // ── Init status polling ──────────────────────────────────────────────────
 
-let mbStatusTimer = null;
+let mbStatusTimer      = null;
+let mbGarchReadyFetched = false;  // ensure we only auto-refetch once per load
 
 function mbPollStatus() {
   fetch('/api/model/status').then(r => r.json()).then(s => {
@@ -564,6 +565,11 @@ function mbPollStatus() {
       el.className = 'mb-init-status ready';
       el.textContent = `Ready  ·  SPX @ ${Math.round(s.spx_at_init).toLocaleString()}`;
       if (s.active_model) el.textContent += `  ·  model applied ${s.active_model.configured_at}`;
+      // Re-fetch the grid now that GARCH is ready, if it's the active model
+      if (!mbGarchReadyFetched && $('modelSelect')?.value === 'garch_ep') {
+        mbGarchReadyFetched = true;
+        fetchOptions(false);
+      }
       // Show fitted drift as placeholder hint
       if (s.fitted_annual_drift != null) {
         const driftEl = $('mbFittedDrift');
@@ -593,6 +599,7 @@ function mbReinit() {
     $('mbInitStatus').className = 'mb-init-status loading';
     $('mbInitStatus').textContent = 'Restarting simulation…';
     mbLastPreview = null;
+    mbGarchReadyFetched = false;
     setTimeout(mbPollStatus, 1000);
   });
 }
