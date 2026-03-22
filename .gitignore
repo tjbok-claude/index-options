@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.garch_prices_cache.csv
+.garch_fit_cache.pkl

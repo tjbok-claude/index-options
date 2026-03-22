@@ -9,6 +9,8 @@ Provides:
 from __future__ import annotations
 
 import datetime
+import os
+import pickle
 import warnings
 
 import numpy as np
@@ -20,9 +22,15 @@ import yfinance as yf
 from scenarios import Scenario, _crash_name, _validate
 
 # ---------------------------------------------------------------------------
-# Module-level GARCH cache
+# Disk-cache paths (same directory as this file)
 # ---------------------------------------------------------------------------
 
+_DIR         = os.path.dirname(os.path.abspath(__file__))
+_PRICES_CSV  = os.path.join(_DIR, ".garch_prices_cache.csv")
+_GARCH_PKL   = os.path.join(_DIR, ".garch_fit_cache.pkl")
+_CACHE_DAYS  = 7   # refresh prices + refit at most once per week
+
+# Module-level in-memory cache (survives multiple GARCHPathCache calls in one run)
 _GARCH_CACHE: dict = {}
 
 
@@ -30,27 +38,65 @@ _GARCH_CACHE: dict = {}
 # GARCH fitting
 # ---------------------------------------------------------------------------
 
+def _prices_cache_stale() -> bool:
+    """True if the prices CSV doesn't exist or is older than _CACHE_DAYS."""
+    if not os.path.exists(_PRICES_CSV):
+        return True
+    age = datetime.datetime.now() - datetime.datetime.fromtimestamp(os.path.getmtime(_PRICES_CSV))
+    return age.days >= _CACHE_DAYS
+
+
 def _fit_garch(ticker: str = "^GSPC", lookback_years: int = 30):
-    """Fit GJR-GARCH(1,1) with Student-t to SPX returns. Result is cached."""
+    """
+    Fit GJR-GARCH(1,1) with Student-t to SPX returns.
+
+    Caches downloaded prices to .garch_prices_cache.csv and the fitted model
+    to .garch_fit_cache.pkl, refreshed at most once per week. This avoids a
+    yfinance network call on every server restart.
+    """
     cache_key = (ticker, lookback_years)
     if cache_key in _GARCH_CACHE:
         return _GARCH_CACHE[cache_key]
 
-    end = datetime.date.today().isoformat()
-    start = (
-        datetime.date.today() - datetime.timedelta(days=lookback_years * 365)
-    ).isoformat()
+    # Try loading from disk cache first
+    if not _prices_cache_stale() and os.path.exists(_GARCH_PKL):
+        try:
+            with open(_GARCH_PKL, "rb") as f:
+                result = pickle.load(f)
+            _GARCH_CACHE[cache_key] = result
+            print(f"GARCH: loaded fitted model from disk cache ({_GARCH_PKL})")
+            return result
+        except Exception as e:
+            print(f"GARCH: disk cache load failed ({e}), refitting…")
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        data = yf.download(ticker, start=start, end=end, progress=False,
-                           auto_adjust=True, timeout=15)
+    # Download prices (or refresh stale cache)
+    end   = datetime.date.today().isoformat()
+    start = (datetime.date.today() - datetime.timedelta(days=lookback_years * 365)).isoformat()
 
-    prices = data["Close"].dropna()
+    import pandas as pd
+    if not _prices_cache_stale() and os.path.exists(_PRICES_CSV):
+        print("GARCH: using cached prices (< 7 days old)")
+        prices = pd.read_csv(_PRICES_CSV, index_col=0, parse_dates=True).squeeze()
+    else:
+        print(f"GARCH: downloading {lookback_years}yr SPX history from Yahoo Finance…")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            data = yf.download(ticker, start=start, end=end, progress=False,
+                               auto_adjust=True, timeout=15)
+        prices = data["Close"].dropna()
+        prices.to_csv(_PRICES_CSV)
+        print(f"GARCH: prices saved to {_PRICES_CSV}")
+
     returns = prices.pct_change().dropna()
+    am      = arch_model(returns * 100, vol="GARCH", p=1, q=1, o=1, dist="t", mean="Constant")
+    result  = am.fit(disp="off", show_warning=False)
 
-    am = arch_model(returns * 100, vol="GARCH", p=1, q=1, o=1, dist="t", mean="Constant")
-    result = am.fit(disp="off", show_warning=False)
+    try:
+        with open(_GARCH_PKL, "wb") as f:
+            pickle.dump(result, f)
+        print(f"GARCH: fitted model saved to {_GARCH_PKL}")
+    except Exception as e:
+        print(f"GARCH: could not save fit cache ({e})")
 
     _GARCH_CACHE[cache_key] = result
     return result
