@@ -11,6 +11,7 @@ Usage:
 """
 
 import math
+import os
 import threading
 import time
 import webbrowser
@@ -97,6 +98,24 @@ def start_garch_init(price: float | None = None, annual_drift_pct: float | None 
     t = threading.Thread(target=_garch_init_worker, args=(p, annual_drift_pct), daemon=True)
     t.start()
 
+
+# ---------------------------------------------------------------------------
+# Heartbeat — auto-shutdown when browser closes
+# ---------------------------------------------------------------------------
+_last_heartbeat: float = time.time()
+_HEARTBEAT_TIMEOUT = 90   # seconds without a ping before shutdown
+
+
+def _heartbeat_watcher() -> None:
+    """Daemon thread: shut down the process if no browser ping for 90 s."""
+    while True:
+        time.sleep(10)
+        if time.time() - _last_heartbeat > _HEARTBEAT_TIMEOUT:
+            print("No browser heartbeat for 90 s — shutting down.")
+            os._exit(0)
+
+
+threading.Thread(target=_heartbeat_watcher, daemon=True).start()
 
 # Start background simulation immediately when the server loads
 start_garch_init()
@@ -345,6 +364,13 @@ def api_model_commit():
         _garch_state["meta"]  = meta
 
     return jsonify({"ok": True, "meta": meta})
+
+
+@app.route("/api/heartbeat", methods=["POST"])
+def api_heartbeat():
+    global _last_heartbeat
+    _last_heartbeat = time.time()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/health")

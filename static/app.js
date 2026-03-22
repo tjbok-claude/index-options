@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260321e');
+console.log('app.js v20260322a');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -995,4 +995,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Auto-fetch on load (warms CBOE cache; grid revealed once GARCH is ready)
   fetchOptions(true);
+
+  // Heartbeat: ping server every 30 s so it knows the browser is open.
+  // Server auto-shuts-down after 90 s of silence (e.g. browser closed).
+  function sendHeartbeat() { fetch('/api/heartbeat', { method: 'POST' }).catch(() => {}); }
+  sendHeartbeat();
+  setInterval(sendHeartbeat, 30_000);
 });
