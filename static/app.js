@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260322a');
+console.log('app.js v20260322b');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -625,6 +625,12 @@ function mbPollStatus() {
     } else if (s.error) {
       el.className = 'mb-init-status error';
       el.textContent = '⚠ ' + s.error;
+      // GARCH failed — reveal grid anyway (server falls back to survival model)
+      if (!mbGarchReadyFetched) {
+        mbGarchReadyFetched = true;
+        showGridOverlay(false);
+        fetchOptions(false);
+      }
     } else if (s.paths_ready) {
       el.className = 'mb-init-status ready';
       el.textContent = `Ready  ·  SPX @ ${Math.round(s.spx_at_init).toLocaleString()}`;
@@ -992,6 +998,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Show overlay if GARCH/EP is active — grid will appear once model is ready
   if ($('modelSelect')?.value === 'garch_ep') showGridOverlay(true);
+
+  // Safety valve: if GARCH hasn't finished in 2 minutes, show grid anyway
+  setTimeout(() => {
+    if (!_garchGridRevealed) {
+      console.warn('GARCH 2-min timeout — revealing grid with fallback model');
+      showGridOverlay(false);
+      if (!mbGarchReadyFetched) { mbGarchReadyFetched = true; fetchOptions(false); }
+    }
+  }, 120_000);
 
   // Auto-fetch on load (warms CBOE cache; grid revealed once GARCH is ready)
   fetchOptions(true);
