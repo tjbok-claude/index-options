@@ -439,7 +439,24 @@ def _to_records(df: pd.DataFrame) -> list:
 
 # ---------------------------------------------------------------------------
 
+def _free_port(port: int) -> None:
+    """Kill any existing process listening on the given port (except ourselves)."""
+    import subprocess
+    try:
+        result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTEN" in line:
+                pid = int(line.strip().split()[-1])
+                if pid != os.getpid():
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                   capture_output=True)
+                    print(f"Killed stale process PID {pid} on port {port}")
+    except Exception as exc:
+        print(f"Warning: could not free port {port}: {exc}")
+
+
 if __name__ == "__main__":
+    _free_port(5000)
     print("SPX Hedge Ranker  =>  http://localhost:5000")
     webbrowser.open("http://localhost:5000")
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
