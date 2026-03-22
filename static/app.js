@@ -40,7 +40,7 @@ function numVal(elemId, fallback) {
 }
 
 // Default crash-beta by symbol (crash-weighted, not market beta)
-const SYMBOL_BETA_DEFAULTS = { SPX:1.0, SPY:1.0, QQQ:1.3, NDX:1.3, RUT:0.85, IWM:0.85 };
+const SYMBOL_BETA_DEFAULTS = { SPX:1.0, NDX:1.3, RUT:0.85 };
 
 function getParams() {
   return {
@@ -301,9 +301,15 @@ function setGridHeight() {
 // ---------------------------------------------------------------------------
 // API fetch
 // ---------------------------------------------------------------------------
+// Sequence counter: each fetch gets an ID; stale responses (superseded by a
+// newer fetch) are silently discarded so symbol switches never clobber results.
+let _fetchSeq = 0;
+
 async function fetchOptions(forceRefresh = false) {
   if (state.loading) return;
   setLoading(true, 'Connecting to server…');
+
+  const mySeq = ++_fetchSeq;   // tag this fetch; anything with a lower seq is stale
 
   // Show overlay while a forced refresh loads (gives clear visual feedback)
   if (forceRefresh) showGridOverlay(true);
@@ -324,6 +330,10 @@ async function fetchOptions(forceRefresh = false) {
     setStatus(`Fetching ${p.symbol} chain from CBOE…`);
     const resp = await fetch(`${API_URL}?${qs}`);
     const json = await resp.json();
+
+    // Discard if a newer fetch has already started (e.g. user switched symbol
+    // while the GARCH auto-refetch was still in flight)
+    if (mySeq !== _fetchSeq) return;
 
     if (!resp.ok || json.error) {
       throw new Error(json.detail || json.error || `HTTP ${resp.status}`);
@@ -347,9 +357,11 @@ async function fetchOptions(forceRefresh = false) {
       showGridOverlay(false);
     }
   } catch (err) {
-    showError(err.message);
+    if (mySeq === _fetchSeq) {   // only surface errors from the current fetch
+      showError(err.message);
+      showGridOverlay(false);
+    }
     setStatus('');
-    showGridOverlay(false);  // don't leave grid hidden on error
   } finally {
     setLoading(false);
   }
