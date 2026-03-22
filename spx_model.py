@@ -43,7 +43,8 @@ def _fit_garch(ticker: str = "^GSPC", lookback_years: int = 30):
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+        data = yf.download(ticker, start=start, end=end, progress=False,
+                           auto_adjust=True, timeout=15)
 
     prices = data["Close"].dropna()
     returns = prices.pct_change().dropna()
