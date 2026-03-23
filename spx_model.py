@@ -159,7 +159,7 @@ def _simulate_paths(
     denom       = max(1.0 - alpha - 0.5 * gamma - beta, 1e-8)
     h_init      = max(omega / denom, 1e-6)
 
-    n_weeks     = horizon // weekly_step
+    n_weeks     = len(range(0, horizon, weekly_step))
     paths_out   = np.empty((n_paths, n_weeks))
     run_min_out = np.empty(n_paths)
     argmin_out  = np.empty(n_paths, dtype=np.int32)
