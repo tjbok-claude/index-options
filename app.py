@@ -389,58 +389,138 @@ def _ensure_cboe_cached(symbol: str) -> pd.DataFrame | None:
         return None
 
 
-def _compute_bl_priors(
+def _bl_target_cal_dte(query_dte_trading: int) -> int:
+    """Convert trading-day DTE to approximate calendar-day DTE for CBOE options lookup."""
+    return int(round(query_dte_trading * 365.0 / 252.0))
+
+
+def _compute_bl_market_running_min(
     symbol: str,
-    current_price: float,
+    cache,
     query_dte: int,
     drawdown_levels: list,
     r: float = 0.045,
+    n_bins: int = 200,
 ) -> list:
     """
-    Breeden-Litzenberger risk-neutral CDF from live put prices.
+    Reweight GARCH paths by the B-L risk-neutral terminal density, then compute
+    P(running min over 2yr ≤ level) under the reweighted measure.
 
-    Returns list of float|None, one per drawdown level.
-    Returns [] on any error (e.g. cache not populated).
+    This makes the Market column directly comparable to GARCH Prior and Your View,
+    which also show running-minimum probabilities.
+
+    query_dte is in trading days (same scale as the model paths).
+    Returns list of float, one per drawdown level. Returns [] on any error.
     """
-    from scipy.interpolate import PchipInterpolator
+    from spx_model import _compute_path_weights
     df = _ensure_cboe_cached(symbol)
     if df is None or df.empty:
         return []
     try:
         from datetime import date as _date
+        from scipy.interpolate import interp1d
+        from scipy.ndimage import gaussian_filter1d
+
         today = _date.today()
-        puts = df[(df["type"] == "PUT") & (df["ask"] > 0)].copy()
-        if puts.empty:
+        cal_dte = _bl_target_cal_dte(query_dte)
+
+        # --- Get GARCH terminal values at query_dte (trading days) ---
+        paths = cache.paths           # (n_paths, n_weeks)
+        week_idx = min((query_dte - 1) // 5, paths.shape[1] - 1)
+        S_T = paths[:, week_idx].astype(float)   # (n_paths,)
+        prior_pw = _compute_path_weights(
+            cache.prior_weights, cache.bin_assignments, cache.n_paths
+        )
+
+        # --- Get B-L density at nearest expiry to cal_dte ---
+        tmp = df[df["ask"] > 0].copy()
+        if tmp.empty:
             return []
-        puts["dte"] = puts["expiry"].apply(lambda e: (e - today).days)
-        # Find nearest expiry to query_dte
-        nearest_dte = puts.groupby("dte").size().index
-        best_dte = int(nearest_dte[np.argmin(np.abs(nearest_dte - query_dte))])
-        slice_ = puts[puts["dte"] == best_dte].sort_values("strike")
-        if len(slice_) < 4:
-            return [None] * len(drawdown_levels)
-        strikes = slice_["strike"].values.astype(float)
-        # Use mid when bid is quoted; fall back to ask for zero-bid OTM puts
-        bid = slice_["bid"].values.astype(float)
-        ask = slice_["ask"].values.astype(float)
-        mids = np.where(bid > 0, (bid + ask) / 2.0, ask)
-        interp  = PchipInterpolator(strikes, mids, extrapolate=False)
-        T       = best_dte / 252.0
-        disc    = np.exp(r * T)
-        dK      = current_price * 0.005
-        result  = []
+        tmp["dte_cal"] = tmp["expiry"].apply(lambda e: (e - today).days)
+        available = tmp["dte_cal"].unique()
+        best_cal = int(available[np.argmin(np.abs(available - cal_dte))])
+
+        grp = tmp[tmp["dte_cal"] == best_cal]
+        current_price = float(cache.current_price)
+
+        # Quality filter
+        oi_ok    = grp["open_interest"].isna() | (grp["open_interest"] > 0)
+        ask_safe = grp["ask"].clip(lower=0.01)
+        spread_ok = (grp["bid"] == 0) | ((grp["ask"] - grp["bid"]) / ask_safe <= 0.60)
+        grp = grp[oi_ok & spread_ok]
+
+        puts  = grp[(grp["type"] == "PUT")  & (grp["strike"] < current_price)].sort_values("strike")
+        calls = grp[(grp["type"] == "CALL") & (grp["strike"] > current_price)].sort_values("strike")
+
+        T    = best_cal / 365.0
+        disc = np.exp(r * T)
+
+        def _mids(df_):
+            b = df_["bid"].values.astype(float)
+            a = df_["ask"].values.astype(float)
+            return np.where(b > 0, (b + a) / 2.0, a)
+
+        ks_put, ds_put   = np.array([]), np.array([])
+        ks_call, ds_call = np.array([]), np.array([])
+        if len(puts) >= 3:
+            ks_put, ds_put = _bl_fd_density(
+                puts["strike"].values.astype(float), _mids(puts), disc)
+        if len(calls) >= 3:
+            ks_call, ds_call = _bl_fd_density(
+                calls["strike"].values.astype(float), _mids(calls), disc)
+
+        if len(ks_put) + len(ks_call) < 3:
+            print(f"BL market running min: too few density points (puts={len(ks_put)}, calls={len(ks_call)})")
+            return []
+
+        all_ks = np.concatenate([ks_put, ks_call])
+        all_ds = np.concatenate([ds_put, ds_call])
+        sidx   = np.argsort(all_ks)
+        all_ks = all_ks[sidx]
+        all_ds = all_ds[sidx]
+        all_ds = gaussian_filter1d(all_ds, sigma=2.0)
+        all_ds = np.maximum(all_ds, 0.0)
+
+        # Interpolate B-L density at each path's terminal value
+        bl_interp = interp1d(all_ks, all_ds, kind='linear', bounds_error=False, fill_value=0.0)
+        f_bl = np.maximum(bl_interp(S_T), 0.0)   # (n_paths,)
+
+        # Estimate GARCH prior density from binned terminal distribution
+        lo = float(np.percentile(S_T, 0.2))
+        hi = float(np.percentile(S_T, 99.8))
+        edges = np.linspace(lo, hi, n_bins + 1)
+        bin_width = (hi - lo) / n_bins
+        bin_assign = np.clip(np.searchsorted(edges[1:-1], S_T, side="left"), 0, n_bins - 1)
+        bin_mass   = np.bincount(bin_assign, weights=prior_pw, minlength=n_bins)
+        f_garch_bin = bin_mass / bin_width   # density per unit of SPX
+
+        # Likelihood ratio per path (use bin-level GARCH density for stability)
+        f_garch_path = f_garch_bin[bin_assign]
+        lr = np.zeros(len(S_T))
+        valid = f_garch_path > 0
+        lr[valid] = f_bl[valid] / f_garch_path[valid]
+
+        # Reweighted measure: w[i] ∝ prior_pw[i] * LR[i]
+        new_weights = prior_pw * lr
+        total = new_weights.sum()
+        if total <= 0:
+            print("BL market running min: zero total weight after reweighting")
+            return []
+        new_weights /= total
+
+        # P(running min over 2yr ≤ level) under reweighted measure
+        running_min = cache.running_min
+        results = []
         for K in drawdown_levels:
-            fwd  = float(interp(K + dK))
-            bwd  = float(interp(K - dK))
-            if np.isnan(fwd) or np.isnan(bwd):
-                result.append(None)
-                continue
-            deriv = (fwd - bwd) / (2.0 * dK)
-            cdf   = float(np.clip(deriv * disc, 0.0, 1.0))
-            result.append(round(cdf, 4))
-        return result
+            mask = running_min < K
+            prob = float(np.clip(np.sum(new_weights[mask]), 0.0, 1.0))
+            results.append(round(prob, 4))
+        print(f"BL market running min: best_cal={best_cal}, results={results}")
+        return results
+
     except Exception as exc:
-        print(f"BL priors error: {exc}")
+        print(f"BL market running min error: {exc}")
+        import traceback; traceback.print_exc()
         return []
 
 
@@ -610,13 +690,16 @@ def api_model_preview():
     paths, groups, stats = model.quintile_paths()
     terminal             = model.terminal_distribution(query_dte)
 
-    # Market (risk-neutral) priors via Breeden-Litzenberger
+    # Market column: B-L-reweighted GARCH running-min probabilities
+    # (same metric as GARCH Prior / Your View — directly comparable)
     try:
-        market_priors = _compute_bl_priors(
-            "SPX", cache.current_price, query_dte,
+        market_priors = _compute_bl_market_running_min(
+            "SPX", cache,
+            query_dte,
             [s["level"] for s in prior_stats],
         )
-    except Exception:
+    except Exception as exc:
+        print(f"Market priors error: {exc}")
         market_priors = []
 
     # Distribution surface + B-L slices

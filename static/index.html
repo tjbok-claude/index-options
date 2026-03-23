@@ -434,11 +434,11 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
       <div class="mb-section">
         <div class="mb-section-title">Terminal Distribution at DTE</div>
         <select id="mbQueryDte" class="mb-select" onchange="mbSchedulePreview()">
-          <option value="90">90 days (~3 months)</option>
-          <option value="180">180 days (~6 months)</option>
-          <option value="252" selected>252 days (~1 year)</option>
-          <option value="365">365 days (~17 months)</option>
-          <option value="504">504 days (~2 years)</option>
+          <option value="63">~3 months (63 trading days)</option>
+          <option value="126">~6 months (126 trading days)</option>
+          <option value="252" selected>~1 year (252 trading days)</option>
+          <option value="378">~18 months (378 trading days)</option>
+          <option value="504">~2 years (504 trading days)</option>
         </select>
       </div>
 
@@ -472,7 +472,7 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
             <thead><tr>
               <th>Drawdown</th><th>SPX Level</th>
               <th>GARCH Prior</th><th>Your View</th>
-              <th title="Risk-neutral CDF from Breeden-Litzenberger (put prices at nearest expiry to selected DTE). Typically higher than GARCH due to crash risk premium.">Market (RN)</th>
+              <th title="P(2yr running min ≤ level) under market-implied (B-L) measure. GARCH paths reweighted by B-L risk-neutral terminal density. Directly comparable to GARCH Prior and Your View columns.">Market (RN)</th>
             </tr></thead>
             <tbody id="priorBody"><tr><td colspan="5" class="prior-loading">Loading…</td></tr></tbody>
           </table>
@@ -513,6 +513,6 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
   </div><!-- end mb-layout -->
 </div><!-- end #tabContentModel -->
 
-<script src="/static/app.js?v=17"></script>
+<script src="/static/app.js?v=18"></script>
 </body>
 </html>
