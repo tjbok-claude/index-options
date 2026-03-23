@@ -343,6 +343,15 @@ async function fetchOptions(forceRefresh = false) {
     state.allRows = json.rows  || [];
     state.meta    = json.meta  || null;
 
+    // Sync dropdown if server fell back to a different model (e.g. survival when GARCH not ready)
+    const actualKey = state.meta?.model_key;
+    const sel = $('modelSelect');
+    if (actualKey && sel && sel.value !== actualKey &&
+        sel.querySelector(`option[value="${actualKey}"]`)) {
+      sel.value = actualKey;
+      updateGarchDisabledState();
+    }
+
     clearError();
     applyFilters();
     updateMeta();
@@ -620,7 +629,7 @@ function mbPollStatus() {
     const el = $('mbInitStatus');
     if (s.loading) {
       el.className = 'mb-init-status loading';
-      el.textContent = 'Simulating 100K paths… (this takes ~10–15s)';
+      el.textContent = `Simulating ${s.n_paths ? (s.n_paths/1000).toFixed(0)+'K' : '100K'} paths… (may take 1–3 min on first load)`;
       mbStatusTimer = setTimeout(mbPollStatus, 1500);
     } else if (s.error) {
       el.className = 'mb-init-status error';
@@ -999,14 +1008,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Show overlay if GARCH/EP is active — grid will appear once model is ready
   if ($('modelSelect')?.value === 'garch_ep') showGridOverlay(true);
 
-  // Safety valve: if GARCH hasn't finished in 2 minutes, show grid anyway
+  // Safety valve: if GARCH hasn't finished in 5 minutes, show grid anyway
   setTimeout(() => {
     if (!_garchGridRevealed) {
-      console.warn('GARCH 2-min timeout — revealing grid with fallback model');
+      console.warn('GARCH 5-min timeout — revealing grid with fallback model');
       showGridOverlay(false);
       if (!mbGarchReadyFetched) { mbGarchReadyFetched = true; fetchOptions(false); }
     }
-  }, 120_000);
+  }, 300_000);
 
   // Auto-fetch on load (warms CBOE cache; grid revealed once GARCH is ready)
   fetchOptions(true);

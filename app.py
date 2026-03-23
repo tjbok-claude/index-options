@@ -64,13 +64,14 @@ _GARCH_DEFAULT_PRICE = 6500.0  # fallback if CBOE not yet fetched
 def _garch_init_worker(price: float, annual_drift_pct: float | None = None) -> None:
     """Background thread: fit GARCH and simulate paths."""
     from spx_model import GARCHPathCache
+    n_paths = int(os.environ.get("GARCH_N_PATHS", 100_000))
     with _garch_lock:
         _garch_state["loading"] = True
         _garch_state["error"] = None
         _garch_state["cache"] = None
         _garch_state["model"] = None
     try:
-        cache = GARCHPathCache(price, annual_drift_pct=annual_drift_pct)
+        cache = GARCHPathCache(price, annual_drift_pct=annual_drift_pct, n_paths=n_paths)
         # Auto-create a default EP model matching the UI's default parameters
         # so the grid shows the same results as clicking Apply without changes.
         default_model = cache.make_model(
@@ -229,11 +230,13 @@ def api_options():
         })
 
     # For garch_ep, use committed singleton; fall back to survival if not ready
+    actual_model_key = model_name  # the clean dropdown key actually used
     if model_name == "garch_ep":
         with _garch_lock:
             active = _garch_state["model"]
         if active is None:
             scoring_model = get_model("survival")
+            actual_model_key = "survival"
             model_name = "survival (garch_ep not configured)"
         else:
             scoring_model = active
@@ -254,7 +257,7 @@ def api_options():
 
     return jsonify({
         "rows": _to_records(out),
-        "meta": _build_meta(underlying, spx_spot, n_contracts, p, len(scored), len(rejected), fetched_at, model_name),
+        "meta": _build_meta(underlying, spx_spot, n_contracts, p, len(scored), len(rejected), fetched_at, model_name, actual_model_key),
     })
 
 
@@ -274,6 +277,7 @@ def api_model_status():
         "paths_ready":          cache is not None,
         "loading":              s["loading"],
         "error":                s["error"],
+        "n_paths":              int(os.environ.get("GARCH_N_PATHS", 100_000)),
         "spx_at_init":          cache.current_price if cache else None,
         "fitted_annual_drift":  cache.fitted_annual_drift_pct if cache else None,
         "active_drift":         (cache.annual_drift_pct if cache.annual_drift_pct is not None
@@ -395,12 +399,13 @@ def api_health():
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_meta(underlying, spx_spot, n_contracts, p, n_passed, n_filtered, fetched_at, model_name=DEFAULT_MODEL):
+def _build_meta(underlying, spx_spot, n_contracts, p, n_passed, n_filtered, fetched_at, model_name=DEFAULT_MODEL, model_key=None):
     with _garch_lock:
         garch_meta = _garch_state["meta"]
         garch_loading = _garch_state["loading"]
     return {
         "model": model_name,
+        "model_key": model_key if model_key is not None else model_name,
         "garch_ep_meta": garch_meta,
         "garch_loading": garch_loading,
         "symbol":        p.symbol,
