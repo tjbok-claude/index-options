@@ -64,14 +64,16 @@ _GARCH_DEFAULT_PRICE = 6500.0  # fallback if CBOE not yet fetched
 def _garch_init_worker(price: float, annual_drift_pct: float | None = None) -> None:
     """Background thread: fit GARCH and simulate paths."""
     from spx_model import GARCHPathCache
-    n_paths = int(os.environ.get("GARCH_N_PATHS", 100_000))
+    n_paths    = int(os.environ.get("GARCH_N_PATHS",    100_000))
+    chunk_size = int(os.environ.get("GARCH_CHUNK_SIZE",  25_000))
     with _garch_lock:
         _garch_state["loading"] = True
         _garch_state["error"] = None
         _garch_state["cache"] = None
         _garch_state["model"] = None
     try:
-        cache = GARCHPathCache(price, annual_drift_pct=annual_drift_pct, n_paths=n_paths)
+        cache = GARCHPathCache(price, annual_drift_pct=annual_drift_pct,
+                               n_paths=n_paths, chunk_size=chunk_size)
         # Auto-create a default EP model matching the UI's default parameters
         # so the grid shows the same results as clicking Apply without changes.
         default_model = cache.make_model(

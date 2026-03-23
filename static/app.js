@@ -433,11 +433,15 @@ let _garchGridRevealed = false;  // true once grid is first shown with real garc
 
 function showGridOverlay(show) {
   const overlay = $('gridLoadOverlay');
-  const grid    = $('grid');
-  if (!overlay || !grid) return;
+  if (!overlay) return;
   overlay.style.display = show ? 'flex' : 'none';
-  grid.style.display    = show ? 'none' : '';
-  if (!show) { _garchGridRevealed = true; setGridHeight(); }
+  if (!show) {
+    _garchGridRevealed = true;
+    setGridHeight();
+    // Force Tabulator to re-render rows — necessary when data was loaded
+    // while the overlay was covering the grid.
+    if (table) table.redraw(true);
+  }
 }
 
 function showError(msg) {
@@ -644,9 +648,12 @@ function mbPollStatus() {
       el.className = 'mb-init-status ready';
       el.textContent = `Ready  ·  SPX @ ${Math.round(s.spx_at_init).toLocaleString()}`;
       if (s.active_model) el.textContent += `  ·  model applied ${s.active_model.configured_at}`;
-      // Re-fetch the grid now that GARCH is ready, if it's the active model
-      if (!mbGarchReadyFetched && $('modelSelect')?.value === 'garch_ep') {
+      // Auto-apply GARCH/EP to the grid once simulation completes
+      if (!mbGarchReadyFetched) {
         mbGarchReadyFetched = true;
+        const sel = $('modelSelect');
+        if (sel) { sel.value = 'garch_ep'; updateGarchDisabledState(); }
+        showGridOverlay(false);   // reveal grid before fetch so it renders correctly
         fetchOptions(false);
       }
       // Show fitted drift as placeholder hint
@@ -1008,14 +1015,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Show overlay if GARCH/EP is active — grid will appear once model is ready
   if ($('modelSelect')?.value === 'garch_ep') showGridOverlay(true);
 
-  // Safety valve: if GARCH hasn't finished in 5 minutes, show grid anyway
-  setTimeout(() => {
-    if (!_garchGridRevealed) {
-      console.warn('GARCH 5-min timeout — revealing grid with fallback model');
-      showGridOverlay(false);
-      if (!mbGarchReadyFetched) { mbGarchReadyFetched = true; fetchOptions(false); }
-    }
-  }, 300_000);
+  // Safety valve: only triggers if GARCH errors (handled in mbPollStatus error branch).
+  // A plain timeout does NOT fall back — grid stays blank until GARCH completes or errors.
 
   // Auto-fetch on load (warms CBOE cache; grid revealed once GARCH is ready)
   fetchOptions(true);

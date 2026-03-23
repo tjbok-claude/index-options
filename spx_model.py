@@ -168,23 +168,30 @@ def _simulate_paths(
         end = min(start + chunk_size, n_paths)
         nc  = end - start
 
-        # Generate and standardize in-place — avoids a second large allocation
+        # Generate innovations for all steps; only store post-burn returns
+        # to avoid keeping a (total_steps, nc) array alive longer than needed.
         innov = student_t.rvs(nu, size=(total_steps, nc))
         innov /= std_factor
 
-        h       = np.full(nc, h_init)
-        returns = np.empty((total_steps, nc))
+        h              = np.full(nc, h_init)
+        post_burn_ret  = np.empty((horizon, nc))   # (horizon, nc) — half the old size
 
         for t in range(total_steps):
-            sigma      = np.sqrt(np.maximum(h, 1e-8))
-            eps        = sigma * innov[t]
-            returns[t] = mu + eps
-            indicator  = (eps < 0.0).astype(np.float64)
-            h          = omega + (alpha + gamma * indicator) * eps ** 2 + beta * h
+            sigma     = np.sqrt(np.maximum(h, 1e-8))
+            eps       = sigma * innov[t]
+            r         = mu + eps
+            indicator = (eps < 0.0).astype(np.float64)
+            h         = omega + (alpha + gamma * indicator) * eps ** 2 + beta * h
+            if t >= burn:
+                post_burn_ret[t - burn] = r
 
-        pct         = np.clip(returns[burn:], -99.0, None)
+        del innov   # free immediately — no longer needed
+
+        pct         = np.clip(post_burn_ret, -99.0, None)
+        del post_burn_ret
         chunk_daily = (current_price * np.exp(np.cumsum(np.log1p(pct / 100.0), axis=0))).T
-        # (nc, horizon) — daily prices; compute stats before discarding
+        del pct
+        # chunk_daily: (nc, horizon) daily prices; extract stats then discard
 
         run_min_out[start:end] = np.minimum.accumulate(chunk_daily, axis=1)[:, -1]
         argmin_out[start:end]  = np.argmin(chunk_daily, axis=1).astype(np.int32)
@@ -542,6 +549,7 @@ class GARCHPathCache:
         horizon: int = 504,
         n_bins: int = 200,
         annual_drift_pct: float | None = None,
+        chunk_size: int = 25_000,
     ):
         self.current_price = float(current_price)
         self.n_paths = n_paths
@@ -560,7 +568,8 @@ class GARCHPathCache:
 
         print(f"GARCHPathCache: Simulating {n_paths:,} paths × {horizon} days (stored weekly)...")
         self.paths, self.running_min, self.argmin_days = _simulate_paths(
-            garch_result, current_price, n_paths, horizon, mu_override=annual_drift_pct
+            garch_result, current_price, n_paths, horizon,
+            mu_override=annual_drift_pct, chunk_size=chunk_size,
         )
 
         print("GARCHPathCache: Building bins...")

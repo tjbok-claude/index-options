@@ -430,7 +430,9 @@ header {
 
 /* ── Grid load overlay ──────────────────────────────────────────────────── */
 .grid-load-overlay {
-  flex:            1;
+  position:        absolute;
+  inset:           0;
+  z-index:         10;
   display:         flex;
   align-items:     center;
   justify-content: center;
@@ -438,7 +440,6 @@ header {
   color:           var(--text-muted);
   font-size:       13px;
   background:      var(--bg);
-  min-height:      0;
 }
 .grid-load-overlay .spinner {
   width:            14px;
@@ -664,6 +665,7 @@ header {
   flex:           1;
   min-height:     0;
   overflow:       hidden;
+  position:       relative;
 }
 #tabContentModel {
   overflow-y: auto;
