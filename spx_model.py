@@ -79,13 +79,22 @@ def _fit_garch(ticker: str = "^GSPC", lookback_years: int = 30):
         prices = pd.read_csv(_PRICES_CSV, index_col=0, parse_dates=True).squeeze()
     else:
         print(f"GARCH: downloading {lookback_years}yr SPX history from Yahoo Finance…")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            data = yf.download(ticker, start=start, end=end, progress=False,
-                               auto_adjust=True, timeout=15)
-        prices = data["Close"].dropna()
-        prices.to_csv(_PRICES_CSV)
-        print(f"GARCH: prices saved to {_PRICES_CSV}")
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                data = yf.download(ticker, start=start, end=end, progress=False,
+                                   auto_adjust=True, timeout=15)
+            prices = data["Close"].dropna()
+            if prices.empty:
+                raise ValueError("yfinance returned empty price series")
+            prices.to_csv(_PRICES_CSV)
+            print(f"GARCH: prices saved to {_PRICES_CSV}")
+        except Exception as exc:
+            if os.path.exists(_PRICES_CSV):
+                print(f"GARCH: yfinance failed ({exc}), falling back to stale cached prices")
+                prices = pd.read_csv(_PRICES_CSV, index_col=0, parse_dates=True).squeeze()
+            else:
+                raise
 
     returns = prices.pct_change().dropna()
     am      = arch_model(returns * 100, vol="GARCH", p=1, q=1, o=1, dist="t", mean="Constant")
