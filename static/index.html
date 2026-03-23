@@ -7,7 +7,8 @@
   <link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator_midnight.min.css" rel="stylesheet">
   <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=7">
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.27.0/plotly.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
 
@@ -389,13 +390,12 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
         <div class="drift-row" style="margin-top:8px">
           <label class="ctrl-label" style="display:block;margin-bottom:4px">
             Annual drift (%/yr)
-            <span class="help-tip" title="Override the GARCH fitted drift. Leave blank to use the value fitted from 30 years of SPX history. Lower values (e.g. 5%) produce more conservative path projections; 0 = flat drift.">?</span>
+            <span class="help-tip" title="Forward drift assumption for path simulation. Default 7%/yr — a conservative long-run real-return estimate. The GARCH-fitted value (~13–14%) reflects a survivorship-biased 30-year bull run and overstates expected future returns. Set to 0 for a flat (risk-neutral style) projection.">?</span>
           </label>
           <div style="display:flex;gap:8px;align-items:center">
-            <input id="mbDriftInput" type="number" step="0.5" min="-5" max="20" placeholder="fitted"
+            <input id="mbDriftInput" type="number" step="0.5" min="-5" max="20" value="7"
                    style="width:88px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;
                           color:var(--text);font-family:inherit;font-size:12px;padding:4px 7px;outline:none">
-            <span id="mbFittedDrift" style="font-size:10px;color:var(--text-dim)"></span>
           </div>
         </div>
         <button id="mbReinitBtn" class="btn-secondary" onclick="mbReinit()" style="margin-top:8px">
@@ -464,16 +464,25 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
     <!-- ── Right column: charts ───────────────────────────── -->
     <div class="mb-right">
 
-      <!-- Prior stats table -->
-      <div class="mb-section">
-        <div class="mb-section-title">GARCH Prior vs Your View</div>
-        <table class="prior-table" id="priorTable">
-          <thead><tr>
-            <th>Drawdown</th><th>SPX Level</th>
-            <th>GARCH Prior</th><th>Your View</th>
-          </tr></thead>
-          <tbody id="priorBody"><tr><td colspan="4" class="prior-loading">Loading…</td></tr></tbody>
-        </table>
+      <!-- Prior table + terminal chart side by side -->
+      <div class="mb-section" style="display:flex;gap:16px;align-items:flex-start">
+        <div style="flex:0 0 auto">
+          <div class="mb-section-title">GARCH Prior vs Your View</div>
+          <table class="prior-table" id="priorTable">
+            <thead><tr>
+              <th>Drawdown</th><th>SPX Level</th>
+              <th>GARCH Prior</th><th>Your View</th>
+              <th title="Risk-neutral CDF from Breeden-Litzenberger (put prices at nearest expiry to selected DTE). Typically higher than GARCH due to crash risk premium.">Market (RN)</th>
+            </tr></thead>
+            <tbody id="priorBody"><tr><td colspan="5" class="prior-loading">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div style="flex:1 1 0;min-width:0">
+          <div class="mb-section-title">Terminal Distribution at Selected DTE</div>
+          <div class="chart-wrap chart-wrap-short">
+            <canvas id="termChart"></canvas>
+          </div>
+        </div>
       </div>
 
       <!-- Decile paths chart -->
@@ -487,18 +496,23 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
         <div id="decileWeights" class="decile-weights"></div>
       </div>
 
-      <!-- Terminal distribution chart -->
+      <!-- Distribution surface chart -->
       <div class="mb-section">
-        <div class="mb-section-title">Terminal Distribution at Selected DTE</div>
-        <div class="chart-wrap chart-wrap-short">
-          <canvas id="termChart"></canvas>
+        <div class="mb-section-title">Distribution Surface
+          <div class="surface-toggle" id="surfaceToggle">
+            <button class="st-btn st-active" data-mode="market">Market (B-L)</button>
+            <button class="st-btn" data-mode="posterior">My View</button>
+            <button class="st-btn" data-mode="prior">GARCH Prior</button>
+            <button class="st-btn" data-mode="3d">3D</button>
+          </div>
         </div>
+        <div id="surfaceChart"></div>
       </div>
 
     </div><!-- end mb-right -->
   </div><!-- end mb-layout -->
 </div><!-- end #tabContentModel -->
 
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js?v=17"></script>
 </body>
 </html>

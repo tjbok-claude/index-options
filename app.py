@@ -103,11 +103,51 @@ def _garch_init_worker(price: float, annual_drift_pct: float | None = None) -> N
         print(f"GARCH init failed: {exc}")
 
 
+def _fetch_cboe_spot(symbol: str = "SPX") -> float | None:
+    """
+    Fetch the 15-min delayed spot price from CBOE's lightweight quote endpoint.
+    Much faster than loading the full options chain.
+    Returns None on any failure.
+    """
+    import requests as _req
+    cdn_sym = KNOWN_SYMBOLS.get(symbol)
+    if not cdn_sym:
+        return None
+    url = f"https://cdn.cboe.com/api/global/delayed_quotes/quotes/{cdn_sym}.json"
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/120.0.0.0 Safari/537.36"),
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.cboe.com/",
+    }
+    try:
+        resp = _req.get(url, headers=headers, timeout=8)
+        resp.raise_for_status()
+        price = resp.json().get("data", {}).get("current_price")
+        if price and float(price) > 1000:   # sanity: SPX is always > 1000
+            return float(price)
+    except Exception as exc:
+        print(f"CBOE spot fetch failed: {exc}")
+    return None
+
+
 def start_garch_init(price: float | None = None, annual_drift_pct: float | None = None) -> None:
     """Kick off (or restart) GARCH simulation in a daemon thread."""
     p = price or _GARCH_DEFAULT_PRICE
     t = threading.Thread(target=_garch_init_worker, args=(p, annual_drift_pct), daemon=True)
     t.start()
+
+
+def _start_garch_with_live_price(annual_drift_pct: float | None = None) -> None:
+    """Fetch live SPX spot then kick off GARCH — runs in a daemon thread."""
+    spot = _fetch_cboe_spot("SPX")
+    if spot:
+        print(f"Live SPX spot for GARCH init: {spot:,.2f}")
+    else:
+        spot = _GARCH_DEFAULT_PRICE
+        print(f"Could not fetch live SPX spot; using default {spot:,.0f}")
+    start_garch_init(price=spot, annual_drift_pct=annual_drift_pct)
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +169,12 @@ def _heartbeat_watcher() -> None:
 if not os.environ.get("PORT"):   # local desktop mode only
     threading.Thread(target=_heartbeat_watcher, daemon=True).start()
 
-# Start background simulation immediately when the server loads
-start_garch_init()
+# Start background simulation immediately when the server loads.
+# Fetch live SPX spot first so paths start from the right price.
+# Default drift: 7%/yr (conservative long-run estimate; fitted ~13% reflects
+# survivorship-biased 30yr bull run and is overly optimistic for forward planning).
+threading.Thread(target=_start_garch_with_live_price,
+                 kwargs={"annual_drift_pct": 7.0}, daemon=True).start()
 
 # Columns returned to the browser (order = left→right in grid)
 RESPONSE_COLS = [
@@ -216,8 +260,18 @@ def api_options():
         underlying = entry.get("underlying")
         fetched_at = entry.get("fetched_at")
 
+    # --- Auto-reinit GARCH if it used the fallback price ---
+    # GARCH starts at server boot before CBOE is fetched, using _GARCH_DEFAULT_PRICE.
+    # On the first successful SPX fetch, restart with the real price if they differ.
+    spx_spot = underlying["current_price"]
+    if symbol == "SPX" and spx_spot:
+        with _garch_lock:
+            gc = _garch_state["cache"]
+            gl = _garch_state["loading"]
+        if not gl and (gc is None or abs(gc.current_price - _GARCH_DEFAULT_PRICE) < 50):
+            start_garch_init(price=spx_spot, annual_drift_pct=7.0)
+
     # --- Filter & score ---
-    spx_spot    = underlying["current_price"]
     n_contracts = p.n_contracts(spx_spot)
 
     try:
@@ -312,6 +366,223 @@ def _run_ep(buckets: list, confidence: float) -> "GJREntropyModel | None":
     return cache.make_model(view_buckets=view_buckets, confidence_level=float(confidence))
 
 
+def _ensure_cboe_cached(symbol: str) -> pd.DataFrame | None:
+    """
+    Return the cached CBOE options DataFrame for symbol, fetching it if needed.
+    Useful when B-L is called before the main options tab has loaded.
+    """
+    with _cache_lock:
+        entry = _cache.get(symbol, {})
+        df = entry.get("df")
+    if df is not None and not df.empty:
+        return df
+    # Cache miss — fetch synchronously (will take ~1-2s)
+    try:
+        print(f"B-L: CBOE cache empty for {symbol}, fetching now…")
+        raw = fetch_chain(KNOWN_SYMBOLS[symbol])
+        df_full, underlying = parse_chain(raw, base_symbol=symbol)
+        with _cache_lock:
+            _cache[symbol] = {"df": df_full, "underlying": underlying, "fetched_at": time.time()}
+        return df_full
+    except Exception as exc:
+        print(f"B-L: CBOE fetch failed for {symbol}: {exc}")
+        return None
+
+
+def _compute_bl_priors(
+    symbol: str,
+    current_price: float,
+    query_dte: int,
+    drawdown_levels: list,
+    r: float = 0.045,
+) -> list:
+    """
+    Breeden-Litzenberger risk-neutral CDF from live put prices.
+
+    Returns list of float|None, one per drawdown level.
+    Returns [] on any error (e.g. cache not populated).
+    """
+    from scipy.interpolate import PchipInterpolator
+    df = _ensure_cboe_cached(symbol)
+    if df is None or df.empty:
+        return []
+    try:
+        from datetime import date as _date
+        today = _date.today()
+        puts = df[(df["type"] == "PUT") & (df["ask"] > 0)].copy()
+        if puts.empty:
+            return []
+        puts["dte"] = puts["expiry"].apply(lambda e: (e - today).days)
+        # Find nearest expiry to query_dte
+        nearest_dte = puts.groupby("dte").size().index
+        best_dte = int(nearest_dte[np.argmin(np.abs(nearest_dte - query_dte))])
+        slice_ = puts[puts["dte"] == best_dte].sort_values("strike")
+        if len(slice_) < 4:
+            return [None] * len(drawdown_levels)
+        strikes = slice_["strike"].values.astype(float)
+        # Use mid when bid is quoted; fall back to ask for zero-bid OTM puts
+        bid = slice_["bid"].values.astype(float)
+        ask = slice_["ask"].values.astype(float)
+        mids = np.where(bid > 0, (bid + ask) / 2.0, ask)
+        interp  = PchipInterpolator(strikes, mids, extrapolate=False)
+        T       = best_dte / 252.0
+        disc    = np.exp(r * T)
+        dK      = current_price * 0.005
+        result  = []
+        for K in drawdown_levels:
+            fwd  = float(interp(K + dK))
+            bwd  = float(interp(K - dK))
+            if np.isnan(fwd) or np.isnan(bwd):
+                result.append(None)
+                continue
+            deriv = (fwd - bwd) / (2.0 * dK)
+            cdf   = float(np.clip(deriv * disc, 0.0, 1.0))
+            result.append(round(cdf, 4))
+        return result
+    except Exception as exc:
+        print(f"BL priors error: {exc}")
+        return []
+
+
+def _bl_fd_density(strikes: np.ndarray, mids: np.ndarray, disc: float) -> tuple:
+    """
+    Breeden-Litzenberger density via direct finite differences on listed strikes.
+    Returns (k_centers, densities) at the interior strike points.
+    No interpolation — works directly on discrete price data.
+    """
+    n = len(strikes)
+    k_out, d_out = [], []
+    for i in range(1, n - 1):
+        km, k0, kp = strikes[i-1], strikes[i], strikes[i+1]
+        pm, p0, pp = mids[i-1],   mids[i],   mids[i+1]
+        dkm = k0 - km   # left spacing
+        dkp = kp - k0   # right spacing
+        if dkm <= 0 or dkp <= 0:
+            continue
+        # Non-uniform second derivative
+        d2 = 2.0 * (pp / dkp - p0 * (1.0/dkm + 1.0/dkp) + pm / dkm) / (dkm + dkp)
+        density = d2 * disc
+        if density > 0:
+            k_out.append(k0)
+            d_out.append(density)
+    return np.array(k_out), np.array(d_out)
+
+
+def _compute_bl_surface_slices(
+    symbol: str,
+    current_price: float,
+    level_centers: list,
+    r: float = 0.045,
+) -> list:
+    """
+    Per-expiry risk-neutral PDF slices for the distribution surface chart.
+
+    Uses direct finite differences on listed strikes (no interpolation),
+    then linearly interpolates the density onto the GARCH level grid.
+
+    Returns [{"dte": int, "density": list[float]}, ...] sorted by DTE.
+    """
+    df = _ensure_cboe_cached(symbol)
+    if df is None or df.empty:
+        print("BL surface slices: no CBOE data available")
+        return []
+    try:
+        from datetime import date as _date
+        from scipy.interpolate import interp1d
+        today = _date.today()
+        tmp = df[df["ask"] > 0].copy()
+        if tmp.empty:
+            print("BL surface slices: no options with ask>0")
+            return []
+        tmp["dte"] = tmp["expiry"].apply(lambda e: (e - today).days)
+        levels = np.array(level_centers, dtype=float)
+
+        def _mids(df_):
+            b = df_["bid"].values.astype(float)
+            a = df_["ask"].values.astype(float)
+            return np.where(b > 0, (b + a) / 2.0, a)
+
+        slices = []
+        expiry_groups = [(dte, grp) for dte, grp in tmp.groupby("dte")
+                         if 30 <= dte <= 504]
+        print(f"BL surface slices: {len(expiry_groups)} expiries in 30-504d range")
+
+        for dte_val, grp in expiry_groups:
+            T    = dte_val / 252.0
+            disc = np.exp(r * T)
+
+            # Quality filter: drop zero-OI rows and excessively wide spreads.
+            # Keep bid=0 rows (normal for deep OTM) — spread undefined, use ask as price.
+            oi_ok     = grp["open_interest"].isna() | (grp["open_interest"] > 0)
+            ask_safe  = grp["ask"].clip(lower=0.01)
+            spread_ok = (grp["bid"] == 0) | ((grp["ask"] - grp["bid"]) / ask_safe <= 0.60)
+            grp = grp[oi_ok & spread_ok]
+
+            # OTM puts (below spot) + OTM calls (above spot), sorted by strike
+            puts  = grp[(grp["type"] == "PUT")  & (grp["strike"] < current_price)].sort_values("strike")
+            calls = grp[(grp["type"] == "CALL") & (grp["strike"] > current_price)].sort_values("strike")
+
+            ks_put, ds_put   = (np.array([]), np.array([]))
+            ks_call, ds_call = (np.array([]), np.array([]))
+
+            if len(puts) >= 3:
+                ks_put, ds_put = _bl_fd_density(
+                    puts["strike"].values.astype(float), _mids(puts), disc)
+
+            if len(calls) >= 3:
+                ks_call, ds_call = _bl_fd_density(
+                    calls["strike"].values.astype(float), _mids(calls), disc)
+
+            if len(ks_put) + len(ks_call) < 3:
+                continue
+
+            # Merge put and call density points
+            all_ks = np.concatenate([ks_put, ks_call])
+            all_ds = np.concatenate([ds_put, ds_call])
+            sort_idx = np.argsort(all_ks)
+            all_ks = all_ks[sort_idx]
+            all_ds = all_ds[sort_idx]
+
+            if len(all_ks) < 2:
+                continue
+
+            # Interpolate to the GARCH level grid (linear, zero outside support)
+            interp_fn = interp1d(all_ks, all_ds, kind='linear',
+                                 bounds_error=False, fill_value=0.0)
+            pdf = np.maximum(interp_fn(levels), 0.0)
+
+            # Gaussian smoothing to remove finite-difference noise
+            from scipy.ndimage import gaussian_filter1d
+            pdf = gaussian_filter1d(pdf, sigma=2.0)
+            pdf = np.maximum(pdf, 0.0)
+
+            total = pdf.sum()
+            if total <= 0:
+                continue
+            pdf /= total
+            slices.append({"dte": int(dte_val), "density": pdf.tolist()})
+
+        slices.sort(key=lambda x: x["dte"])
+
+        # Reduce to ~8 representative expiries at roughly 1.5, 3, 6, 9, 12, 18, 24 months
+        # (calendar days): avoids cluttered near-term weekly expiries
+        if len(slices) > 8:
+            targets_cal = [45, 91, 136, 182, 273, 365, 456, 504]
+            picked, used = [], set()
+            for t in targets_cal:
+                best = min(slices, key=lambda s: abs(s["dte"] - t))
+                if best["dte"] not in used:
+                    picked.append(best)
+                    used.add(best["dte"])
+            slices = sorted(picked, key=lambda x: x["dte"])
+
+        print(f"BL surface slices: {len(slices)} expiries returned")
+        return slices
+    except Exception as exc:
+        print(f"BL surface slices error: {exc}")
+        return []
+
+
 @app.route("/api/model/preview", methods=["POST"])
 def api_model_preview():
     """Run EP with user inputs and return visualization data. Does NOT commit model."""
@@ -339,6 +610,27 @@ def api_model_preview():
     paths, groups, stats = model.quintile_paths()
     terminal             = model.terminal_distribution(query_dte)
 
+    # Market (risk-neutral) priors via Breeden-Litzenberger
+    try:
+        market_priors = _compute_bl_priors(
+            "SPX", cache.current_price, query_dte,
+            [s["level"] for s in prior_stats],
+        )
+    except Exception:
+        market_priors = []
+
+    # Distribution surface + B-L slices
+    try:
+        surface = model.distribution_surface()
+        if surface:
+            bl_slices = _compute_bl_surface_slices(
+                "SPX", cache.current_price, surface["levels"]
+            )
+            surface["bl_slices"] = bl_slices
+    except Exception as exc:
+        print(f"Surface/BL error: {exc}")
+        surface = {}
+
     return jsonify({
         "current_price":   cache.current_price,
         "prior_stats":     prior_stats,
@@ -346,6 +638,8 @@ def api_model_preview():
         "quintile_groups": groups,
         "quintile_stats":  stats,
         "terminal":        terminal,
+        "market_priors":   market_priors,
+        "surface":         surface,
     })
 
 

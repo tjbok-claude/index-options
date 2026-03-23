@@ -851,6 +851,78 @@ class GJREntropyModel:
 
         return paths_out, groups_out, stats_out
 
+    def distribution_surface(
+        self,
+        n_time_steps: int = 50,
+        n_level_bins: int = 80,
+    ) -> dict:
+        """
+        Full probability density surface across time and SPX level.
+
+        Returns:
+            times_days : list[int]  — trading-day labels for each time slice
+            levels     : list[float] — SPX level centers of the n_level_bins bins
+            prior      : list[list[float]] — shape [n_time_steps][n_level_bins]
+            posterior  : list[list[float]] — shape [n_time_steps][n_level_bins]
+        """
+        paths = self._cache.paths   # (n_paths, n_weeks)
+        if paths is None or paths.size == 0:
+            return {}
+
+        prior_pw = _compute_path_weights(
+            self._cache.prior_weights, self._cache.bin_assignments, self._cache.n_paths
+        )
+
+        # Evenly-spaced week indices across the full 2-yr horizon
+        week_indices = np.linspace(0, paths.shape[1] - 1, n_time_steps).astype(int)
+        times_days = [int(w * 5) for w in week_indices]
+
+        # Global level range — use all time steps to set consistent bins
+        sample = paths[:, week_indices]   # (n_paths, n_time_steps) — read-only slice
+        lo = float(np.percentile(sample, 0.5))
+        hi = float(np.percentile(sample, 99.5))
+        edges = np.linspace(lo, hi, n_level_bins + 1)
+        centers = ((edges[:-1] + edges[1:]) / 2).tolist()
+
+        prior_rows: list[list[float]] = []
+        post_rows:  list[list[float]] = []
+        pcts = [0.10, 0.50, 0.90]
+        prior_q_rows: list[list[float]] = []
+        post_q_rows:  list[list[float]] = []
+
+        def _weighted_quantiles(vals: np.ndarray, weights: np.ndarray, quantiles) -> list:
+            """Exact weighted quantiles from raw path values."""
+            sidx = np.argsort(vals)
+            sv   = vals[sidx]
+            sw   = weights[sidx]
+            cw   = np.cumsum(sw)
+            cw  /= cw[-1]
+            return [float(np.interp(p, cw, sv)) for p in quantiles]
+
+        for w in week_indices:
+            vals = paths[:, w]
+            t_assign = np.clip(
+                np.searchsorted(edges[1:-1], vals, side="left"), 0, n_level_bins - 1
+            )
+            pr = np.bincount(t_assign, weights=prior_pw, minlength=n_level_bins)
+            po = np.bincount(t_assign, weights=self._path_weights, minlength=n_level_bins)
+            ps = pr.sum()
+            os_ = po.sum()
+            prior_rows.append((pr / ps if ps > 0 else pr).tolist())
+            post_rows.append((po / os_ if os_ > 0 else po).tolist())
+            prior_q_rows.append(_weighted_quantiles(vals, prior_pw, pcts))
+            post_q_rows.append(_weighted_quantiles(vals, self._path_weights, pcts))
+
+        return {
+            "times_days": times_days,
+            "levels":     centers,
+            "prior":      prior_rows,
+            "posterior":  post_rows,
+            # Accurate quantile lines from raw paths (avoids bin-resolution stepping)
+            "prior_q":    prior_q_rows,   # [[p10,p50,p90], ...] per time step
+            "post_q":     post_q_rows,
+        }
+
     def terminal_distribution(
         self, target_day: int, n_bins: int = 80
     ) -> dict:

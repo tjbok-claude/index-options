@@ -883,7 +883,7 @@ header {
 /* ── Prior stats table ───────────────────────────────────────────────────── */
 .prior-table {
   width:           100%;
-  max-width:       480px;
+  max-width:       560px;
   border-collapse: collapse;
   font-size:       12px;
 }
@@ -908,7 +908,31 @@ header {
 .prior-table tr.tilt-row td { color: var(--accent); font-weight: 600; }
 .prior-table td.view-bearish { color: var(--danger); }
 .prior-table td.view-bullish { color: var(--good); }
+.prior-table td.market-higher { color: var(--warn); }
+.prior-table td.market-lower  { color: var(--good); }
 .prior-loading { text-align: center !important; color: var(--text-dim); padding: 12px !important; }
+
+/* ── Distribution surface chart ─────────────────────────────────────────── */
+#surfaceChart { width: 100%; min-height: 280px; }
+.surface-toggle {
+  display:     inline-flex;
+  gap:         4px;
+  float:       right;
+  margin-top:  -2px;
+}
+.st-btn {
+  background:   var(--bg-input);
+  border:       1px solid var(--border);
+  border-radius: 10px;
+  color:        var(--text-dim);
+  cursor:       pointer;
+  font-family:  inherit;
+  font-size:    10px;
+  padding:      2px 8px;
+  transition:   background 0.15s, color 0.15s;
+}
+.st-btn:hover { background: var(--bg-hover); color: var(--text); }
+.st-btn.st-active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ── Charts ──────────────────────────────────────────────────────────────── */
 .chart-wrap {
@@ -919,7 +943,7 @@ header {
   border-radius: 6px;
   padding:    8px;
 }
-.chart-wrap-short { height: 220px; max-width: 560px; }
+.chart-wrap-short { height: 220px; }
 
 .decile-weights {
   display:    flex;

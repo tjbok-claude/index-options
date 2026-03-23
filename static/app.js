@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260322b');
+console.log('app.js v20260323h');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -551,8 +551,9 @@ const DEFAULT_BUCKETS = [
 
 let pathChart = null;
 let termChart = null;
-let mbPreviewTimer = null;
-let mbLastPreview  = null;
+let mbPreviewTimer    = null;
+let mbLastPreview     = null;
+let currentSurfaceMode = 'market';
 
 // ── Bucket table ─────────────────────────────────────────────────────────
 
@@ -657,12 +658,6 @@ function mbPollStatus() {
         fetchOptions(false);
       }
       // Show fitted drift as placeholder hint
-      if (s.fitted_annual_drift != null) {
-        const driftEl = $('mbFittedDrift');
-        if (driftEl) driftEl.textContent = `fitted: ${s.fitted_annual_drift.toFixed(1)}%/yr`;
-        const inp = $('mbDriftInput');
-        if (inp && !inp.value) inp.placeholder = `fitted (${s.fitted_annual_drift.toFixed(1)}%)`;
-      }
       if (!mbLastPreview) mbPreview();  // auto-preview once ready
     } else {
       el.className = 'mb-init-status loading';
@@ -714,6 +709,12 @@ async function mbPreview() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ buckets, confidence, query_dte: queryDte }),
     });
+    if (resp.status === 503) {
+      // GARCH still loading — retry silently; status bar already shows progress
+      if (statusEl) statusEl.textContent = '';
+      mbPreviewTimer = setTimeout(mbPreview, 3000);
+      return;
+    }
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
     mbLastPreview = data;
@@ -774,13 +775,14 @@ const QUINTILE_COLORS = [
 ];
 
 function mbRenderPreview(data, buckets) {
-  mbRenderPriorTable(data.prior_stats, buckets);
+  mbRenderPriorTable(data.prior_stats, buckets, data.market_priors || []);
   mbRenderPathChart(data.quintile_paths, data.quintile_groups, data.quintile_stats, data.current_price);
   mbRenderTermChart(data.terminal);
   mbRenderQuintileStats(data.quintile_stats);
+  if (data.surface && data.surface.levels) mbRenderSurfaceChart(data.surface, currentSurfaceMode, data.current_price);
 }
 
-function mbRenderPriorTable(stats, buckets) {
+function mbRenderPriorTable(stats, buckets, marketPriors) {
   // Build a CDF interpolator from user buckets
   const bkSorted = [...buckets].sort((a, b) => a[0] - b[0]);
   function viewCDF(level) {
@@ -798,20 +800,238 @@ function mbRenderPriorTable(stats, buckets) {
 
   const tbody = $('priorBody');
   tbody.innerHTML = '';
-  stats.forEach(s => {
+  stats.forEach((s, i) => {
     const vp = viewCDF(s.level);
     const viewStr = vp !== null ? (vp * 100).toFixed(0) + '%' : '—';
     const diff = vp !== null ? vp - s.prob : null;
     const viewClass = diff === null ? '' : diff > 0.02 ? 'view-bearish' : diff < -0.02 ? 'view-bullish' : '';
+
+    const market = (marketPriors && i < marketPriors.length) ? marketPriors[i] : null;
+    const marketStr = market !== null && market !== undefined ? (market * 100).toFixed(0) + '%' : '—';
+    const mktClass = market !== null && market !== undefined
+      ? (market > s.prob + 0.05 ? 'market-higher' : market < s.prob - 0.05 ? 'market-lower' : '')
+      : '';
+
     const tr = document.createElement('tr');
     if (s.is_tilt_threshold) tr.className = 'tilt-row';
     tr.innerHTML = `
       <td>>−${(s.drawdown * 100).toFixed(0)}%</td>
       <td>${s.level.toLocaleString()}</td>
       <td>${(s.prob * 100).toFixed(0)}%</td>
-      <td class="${viewClass}">${viewStr}</td>`;
+      <td class="${viewClass}">${viewStr}</td>
+      <td class="${mktClass}">${marketStr}</td>`;
     tbody.appendChild(tr);
   });
+}
+
+function surfaceQuantiles(probs2d, levels, pcts) {
+  return pcts.map(p =>
+    probs2d.map(row => {
+      let cum = 0;
+      for (let i = 0; i < row.length; i++) {
+        cum += row[i];
+        if (cum >= p) return levels[i];
+      }
+      return levels[levels.length - 1];
+    })
+  );
+}
+
+function mbRenderSurfaceChart(surface, mode, currentPrice) {
+  if (!surface || !surface.levels || !$('surfaceChart')) return;
+  const levels     = surface.levels;
+  const timesDay   = surface.times_days;
+  const timesMonth = timesDay.map(d => +(d / 21).toFixed(1));
+  const blSlices   = surface.bl_slices || [];
+  const nL         = levels.length;
+
+  const traces = [];
+  const cs = [
+    [0,    '#0d1117'], [0.04, '#0c1e38'], [0.12, '#0f3566'],
+    [0.25, '#1a5c9e'], [0.42, '#4a3fa8'], [0.58, '#9e2d8a'],
+    [0.72, '#d43520'], [0.85, '#f07010'], [1.0,  '#ffe040'],
+  ];
+
+  // ── B-L quantiles from density slices (market-derived) ──────────────────
+  function blQuantiles(pcts) {
+    if (!blSlices.length) return pcts.map(() => []);
+    return pcts.map(p =>
+      blSlices.map(sl => {
+        const total = sl.density.reduce((a, b) => a + b, 0);
+        if (total <= 0) return levels[Math.floor(nL / 2)];
+        let cum = 0;
+        for (let i = 0; i < sl.density.length; i++) {
+          cum += sl.density[i] / total;
+          if (cum >= p) return levels[i];
+        }
+        return levels[nL - 1];
+      })
+    );
+  }
+
+  // ── EP quantile lines — use precomputed raw-path quantiles if available ──
+  // surface.prior_q / surface.post_q are [[p10,p50,p90], ...] per time step
+  function epQFromRaw(qRows) {
+    // qRows shape: [n_time_steps][3] → return [q10[], q50[], q90[]]
+    return [0, 1, 2].map(pi => qRows.map(row => row[pi]));
+  }
+  function epQuantiles(isPrior) {
+    const qRows = isPrior ? surface.prior_q : surface.post_q;
+    if (qRows && qRows.length) return epQFromRaw(qRows);
+    // Fallback to bin-based quantiles if server is old
+    return surfaceQuantiles(isPrior ? surface.prior : surface.posterior, levels, [0.10, 0.50, 0.90]);
+  }
+
+  // ── Y bounds (from EP posterior P10/P90 or B-L quantiles) ───────────────
+  let yLo, yHi;
+  {
+    const [ep10, , ep90] = epQuantiles(false);
+    let lo = Math.min(...ep10) * 0.97;
+    let hi = Math.max(...ep90) * 1.03;
+    if (blSlices.length) {
+      const [bl10, , bl90] = blQuantiles([0.10, 0.50, 0.90]);
+      lo = Math.min(lo, Math.min(...bl10) * 0.97);
+      hi = Math.max(hi, Math.max(...bl90) * 1.03);
+    }
+    yLo = lo; yHi = hi;
+  }
+
+  // ── Helper: build heatmap from a 2D array [time][level] ─────────────────
+  function heatmapTrace(data2d, xVals) {
+    const zT = Array.from({length: nL}, (_, li) => data2d.map(row => row[li]));
+    const zSqrt = zT.map(row => row.map(v => Math.sqrt(Math.max(v, 0))));
+    return {
+      type: 'heatmap', z: zSqrt, x: xVals, y: levels,
+      colorscale: cs, zmin: 0, zauto: true, showscale: false,
+      hovertemplate: '%{y:,.0f} SPX<br>%{x:.1f} mo<extra></extra>',
+    };
+  }
+
+  // ── Helper: EP quantile scatter traces ──────────────────────────────────
+  function addEPLines(isPrior, xVals, opacity=0.9) {
+    const [q10, q50, q90] = epQuantiles(isPrior);
+    [
+      { qs: q10, name: 'P10', dash: 'dash',  color: `rgba(160,160,255,${opacity})` },
+      { qs: q50, name: 'P50', dash: 'solid', color: `rgba(255,255,255,${opacity})` },
+      { qs: q90, name: 'P90', dash: 'dash',  color: `rgba(140,255,160,${opacity})` },
+    ].forEach(({ qs, name, dash, color }) => {
+      traces.push({
+        type: 'scatter', mode: 'lines', x: xVals, y: qs, name,
+        line: { color, width: 1.5, dash, shape: 'spline', smoothing: 0.8 },
+        hovertemplate: `${name}: %{y:,.0f}<extra></extra>`,
+      });
+    });
+  }
+
+  // ── Helper: B-L quantile scatter traces ─────────────────────────────────
+  function addBLLines(opacity=0.9) {
+    if (!blSlices.length) return;
+    const xMo = blSlices.map(sl => +(sl.dte / 21).toFixed(1));
+    const [b10, b50, b90] = blQuantiles([0.10, 0.50, 0.90]);
+    [
+      { qs: b10, name: 'Mkt P10', dash: 'dash',  color: `rgba(0,220,255,${opacity})` },
+      { qs: b50, name: 'Mkt P50', dash: 'solid', color: `rgba(0,220,255,${opacity+0.05})` },
+      { qs: b90, name: 'Mkt P90', dash: 'dash',  color: `rgba(0,220,255,${opacity})` },
+    ].forEach(({ qs, name, dash, color }) => {
+      traces.push({
+        type: 'scatter', mode: 'lines+markers', x: xMo, y: qs, name,
+        // shape:'spline' smoothly interpolates between the discrete expiry points
+        line: { color, width: 1.5, dash, shape: 'spline', smoothing: 1.2 },
+        marker: { size: 4, color },
+        hovertemplate: `${name}: %{y:,.0f}<extra></extra>`,
+      });
+    });
+  }
+
+  // ── Helper: B-L density as filled sideways profiles (one polygon per expiry)
+  function addBLProfiles(scaleMultiplier) {
+    if (!blSlices.length) return false;
+    const xSpan  = Math.max(...blSlices.map(sl => sl.dte / 21)) - Math.min(...blSlices.map(sl => sl.dte / 21));
+    const blScale = Math.max(xSpan, 2) * (scaleMultiplier || 0.12);
+    blSlices.forEach((sl, si) => {
+      const mo   = +(sl.dte / 21).toFixed(2);
+      const peak = Math.max(...sl.density);
+      if (peak <= 0) return;
+      const visX = [], visY = [];
+      sl.density.forEach((d, li) => {
+        const lv = levels[li];
+        if (lv >= yLo && lv <= yHi) {
+          visX.push(mo + (d / peak) * blScale);
+          visY.push(lv);
+        }
+      });
+      if (visX.length < 2) return;
+      const closedX = [mo, ...visX, mo];
+      const closedY = [visY[0], ...visY, visY[visY.length - 1]];
+      traces.push({
+        type: 'scatter', mode: 'lines', fill: 'toself',
+        x: closedX, y: closedY,
+        fillcolor: 'rgba(0, 200, 255, 0.18)',
+        line: { color: 'rgba(0, 220, 255, 0.80)', width: 1.5 },
+        name: si === 0 ? 'Market (B-L)' : `Mkt ${sl.dte}d`,
+        legendgroup: 'market', showlegend: si === 0,
+        hovertemplate: `B-L ${sl.dte}d<br>%{y:,.0f} SPX<extra></extra>`,
+      });
+    });
+    return blSlices.length > 0;
+  }
+
+  if (mode === 'market') {
+    // Market-only view: sideways B-L density profiles + B-L quantile lines.
+    if (!addBLProfiles(0.14)) {
+      traces.push({ type: 'scatter', x: [], y: [], name: 'No market data yet' });
+    }
+    addBLLines(0.95);
+
+  } else if (mode === '3d') {
+    const data2d = surface.posterior;
+    const zT = Array.from({length: nL}, (_, li) => data2d.map(row => row[li]));
+    traces.push({
+      type: 'surface',
+      z: zT, x: timesMonth, y: levels,
+      colorscale: 'Viridis', showscale: false,
+    });
+
+  } else {
+    // 'posterior' or 'prior': EP heatmap + EP quantile lines + faint B-L profiles
+    const isPrior = mode === 'prior';
+    const data2d  = isPrior ? surface.prior : surface.posterior;
+    traces.push(heatmapTrace(data2d, timesMonth));
+    addEPLines(isPrior, timesMonth);
+    addBLProfiles(0.08);   // faint B-L profiles overlaid for comparison
+  }
+
+  // Dotted red horizontal line at current SPX level
+  const spxShapes = (currentPrice && mode !== '3d') ? [{
+    type: 'line', xref: 'paper', yref: 'y',
+    x0: 0, x1: 1, y0: currentPrice, y1: currentPrice,
+    line: { color: 'rgba(255, 80, 80, 0.65)', width: 1.5, dash: 'dot' },
+  }] : [];
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor:  'rgba(0,0,0,0)',
+    margin: { l: 65, r: 10, t: 10, b: 40 },
+    height: 320,
+    shapes: spxShapes,
+    xaxis: { title: 'Months', color: '#aaa', gridcolor: 'rgba(255,255,255,0.07)' },
+    yaxis: {
+      title: 'SPX Level', color: '#aaa', gridcolor: 'rgba(255,255,255,0.07)',
+      type: 'log',
+      range: [Math.log10(yLo), Math.log10(yHi)],
+      tickformat: ',.0f',
+    },
+    legend: { font: { color: '#aaa', size: 10 }, bgcolor: 'rgba(0,0,0,0)' },
+    font: { color: '#aaa', size: 11 },
+    ...(mode === '3d' ? { scene: {
+      xaxis: { title: 'Months', color: '#aaa' },
+      yaxis: { title: 'SPX', color: '#aaa' },
+      zaxis: { title: 'Density', color: '#aaa' },
+      bgcolor: 'rgba(0,0,0,0)',
+    }} : {}),
+  };
+
+  Plotly.react('surfaceChart', traces, layout, { responsive: true, displayModeBar: false });
 }
 
 function mbRenderPathChart(paths, groups, stats, currentPrice) {
@@ -1020,6 +1240,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Auto-fetch on load (warms CBOE cache; grid revealed once GARCH is ready)
   fetchOptions(true);
+
+  // Surface chart toggle
+  $('surfaceToggle')?.addEventListener('click', e => {
+    const btn = e.target.closest('.st-btn');
+    if (!btn || !mbLastPreview?.surface?.levels) return;
+    document.querySelectorAll('#surfaceToggle .st-btn').forEach(b => b.classList.remove('st-active'));
+    btn.classList.add('st-active');
+    currentSurfaceMode = btn.dataset.mode;
+    mbRenderSurfaceChart(mbLastPreview.surface, currentSurfaceMode, mbLastPreview.current_price);
+  });
 
   // Heartbeat: ping server every 30 s so it knows the browser is open.
   // Server auto-shuts-down after 90 s of silence (e.g. browser closed).
