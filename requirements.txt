@@ -2,6 +2,7 @@ requests
 pandas
 numpy
 flask
+gunicorn
 arch
 scipy
 yfinance

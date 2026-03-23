@@ -123,7 +123,8 @@ def _heartbeat_watcher() -> None:
             os._exit(0)
 
 
-threading.Thread(target=_heartbeat_watcher, daemon=True).start()
+if not os.environ.get("PORT"):   # local desktop mode only
+    threading.Thread(target=_heartbeat_watcher, daemon=True).start()
 
 # Start background simulation immediately when the server loads
 start_garch_init()
