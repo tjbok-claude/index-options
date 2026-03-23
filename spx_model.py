@@ -123,7 +123,8 @@ def _simulate_paths(
     burn: int = 500,
     chunk_size: int = 25_000,
     mu_override: float | None = None,
-) -> np.ndarray:
+    weekly_step: int = 5,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Simulate SPX price paths via GJR-GARCH(1,1) with Student-t innovations.
 
@@ -131,7 +132,13 @@ def _simulate_paths(
     ~(burn+horizon) × chunk_size × 16 bytes (~192 MiB at defaults) rather than
     allocating the entire innovation matrix at once.
 
-    Returns array of shape (n_paths, horizon) with SPX price levels.
+    Returns (weekly_paths, running_min, argmin_days) where:
+      weekly_paths : (n_paths, horizon//weekly_step) — price levels sampled every
+                     weekly_step trading days; ~5x smaller than storing daily paths.
+      running_min  : (n_paths,) — 2-yr running minimum per path (computed from
+                     daily data before downsampling, so precision is not lost).
+      argmin_days  : (n_paths,) int32 — trading-day index of the running minimum
+                     per path (used by decile_paths for crash-timing statistics).
     """
     from scipy.stats import t as student_t
 
@@ -152,7 +159,10 @@ def _simulate_paths(
     denom       = max(1.0 - alpha - 0.5 * gamma - beta, 1e-8)
     h_init      = max(omega / denom, 1e-6)
 
-    paths_out = np.empty((n_paths, horizon))
+    n_weeks     = horizon // weekly_step
+    paths_out   = np.empty((n_paths, n_weeks))
+    run_min_out = np.empty(n_paths)
+    argmin_out  = np.empty(n_paths, dtype=np.int32)
 
     for start in range(0, n_paths, chunk_size):
         end = min(start + chunk_size, n_paths)
@@ -172,10 +182,15 @@ def _simulate_paths(
             indicator  = (eps < 0.0).astype(np.float64)
             h          = omega + (alpha + gamma * indicator) * eps ** 2 + beta * h
 
-        pct = np.clip(returns[burn:], -99.0, None)
-        paths_out[start:end] = (current_price * np.exp(np.cumsum(np.log1p(pct / 100.0), axis=0))).T
+        pct         = np.clip(returns[burn:], -99.0, None)
+        chunk_daily = (current_price * np.exp(np.cumsum(np.log1p(pct / 100.0), axis=0))).T
+        # (nc, horizon) — daily prices; compute stats before discarding
 
-    return paths_out
+        run_min_out[start:end] = np.minimum.accumulate(chunk_daily, axis=1)[:, -1]
+        argmin_out[start:end]  = np.argmin(chunk_daily, axis=1).astype(np.int32)
+        paths_out[start:end]   = chunk_daily[:, ::weekly_step]
+
+    return paths_out, run_min_out, argmin_out
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +419,7 @@ def _posterior_terminal(
     Weighted terminal SPX distribution at target_day.
     Returns (terminal_levels, terminal_probs).
     """
-    terminal_day = min(target_day - 1, paths.shape[1] - 1)
+    terminal_day = min((target_day - 1) // 5, paths.shape[1] - 1)
     terminal_values = paths[:, terminal_day]
 
     terminal_edges = np.percentile(terminal_values, np.linspace(0, 100, n_terminal_bins + 1))
@@ -543,13 +558,10 @@ class GARCHPathCache:
         print(f"GARCHPathCache: drift = {effective_drift:.2f}%/yr "
               f"({'override' if annual_drift_pct is not None else 'fitted'})")
 
-        print(f"GARCHPathCache: Simulating {n_paths:,} paths × {horizon} days...")
-        self.paths = _simulate_paths(
+        print(f"GARCHPathCache: Simulating {n_paths:,} paths × {horizon} days (stored weekly)...")
+        self.paths, self.running_min, self.argmin_days = _simulate_paths(
             garch_result, current_price, n_paths, horizon, mu_override=annual_drift_pct
         )
-
-        print("GARCHPathCache: Computing running minima...")
-        self.running_min = _compute_running_min(self.paths)
 
         print("GARCHPathCache: Building bins...")
         self.bin_edges, _, self.prior_weights, self.bin_assignments = _build_bins(
@@ -744,14 +756,13 @@ class GJREntropyModel:
             start = d * size
             end   = (d + 1) * size if d < n_deciles - 1 else n
             chunk = sorted_idx[start:end]
-            chunk_paths = self._cache.paths[chunk]   # (chunk_size, horizon)
 
-            # Average day of minimum (argmin per path); floor at 1 to avoid div/0
-            t_bottom = max(1, int(np.mean(np.argmin(chunk_paths, axis=1))))
+            # Average trading-day of minimum (from daily argmin recorded at simulation time)
+            t_bottom = max(1, int(np.mean(self._cache.argmin_days[chunk])))
 
             # Geometric means (log-space averages) for bottom and terminal prices
             v_bottom   = float(np.exp(np.mean(np.log(self._cache.running_min[chunk]))))
-            v_terminal = float(np.exp(np.mean(np.log(chunk_paths[:, -1]))))
+            v_terminal = float(np.exp(np.mean(np.log(self._cache.paths[chunk, -1]))))
 
             # Two-phase log-linear path
             log_s = np.log(v_start)
@@ -799,7 +810,7 @@ class GJREntropyModel:
         cum_weights   = np.cumsum(sorted_weights)
         cum_weights   /= cum_weights[-1]   # normalize to [0, 1]
 
-        days_idx   = np.arange(0, self._cache.horizon, step)
+        # paths are stored at weekly resolution — no further downsampling needed
         boundaries = np.linspace(0, 1, n_quintiles + 1)
 
         paths_out:  list[list[float]] = []
@@ -818,7 +829,7 @@ class GJREntropyModel:
             sampled = rng.choice(q_indices, size=n, replace=False)
 
             for idx in sampled:
-                paths_out.append(self._cache.paths[idx][days_idx].tolist())
+                paths_out.append(self._cache.paths[idx].tolist())
                 groups_out.append(q)
 
             v_bottom   = float(np.exp(np.mean(np.log(self._cache.running_min[q_indices]))))
@@ -841,7 +852,7 @@ class GJREntropyModel:
         prior_pw = _compute_path_weights(
             self._cache.prior_weights, self._cache.bin_assignments, self._cache.n_paths
         )
-        terminal_day = min(target_day - 1, self._cache.paths.shape[1] - 1)
+        terminal_day = min((target_day - 1) // 5, self._cache.paths.shape[1] - 1)
         all_vals = self._cache.paths[:, terminal_day]
         # Linear-width bins between 0.5th and 99.5th percentile.
         # Quantile-spaced bins would produce a flat chart under equal weights
