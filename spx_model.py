@@ -928,34 +928,43 @@ class GJREntropyModel:
         strike: float,
         dte: int,
         step_pct: float = 0.05,
-        max_rows: int = 15,
+        max_rows: int = 20,
+        min_prob_pct: float = 1.0,
     ) -> list[dict]:
         """
         Compute E(Pay) breakdown for a put option with given strike and DTE.
 
-        Buckets the GARCH terminal distribution into:
-          - [strike, ∞): option expires worthless, payout = $0
-          - Then step_pct × spot increments going down from strike
+        Bucket boundaries are aligned to even multiples of step_pct below spot
+        (e.g. −10%, −20%, −30%, …) so the OTM% column shows clean round numbers.
+        The first below-strike bucket may be narrower than step_pct in order to
+        land on the first even boundary.
+
+        Individual buckets whose prob_pct would fall below min_prob_pct are not
+        shown; instead everything below that point is swept into a single
+        catch-all row (e.g. "<3,600").
 
         Args:
-            strike:   put strike price in SPX points
-            dte:      calendar days to expiry (same unit as grid DTE column)
-            step_pct: bucket width as fraction of current spot (default 5%)
-            max_rows: maximum number of below-strike rows to return
+            strike:       put strike price in SPX points
+            dte:          calendar days to expiry (same unit as grid DTE column)
+            step_pct:     bucket width as fraction of current spot (default 5%)
+            max_rows:     hard cap on below-strike rows before forcing catch-all
+            min_prob_pct: individual buckets below this % probability are swept
+                          into the catch-all (default 1.0%)
 
         Returns list of dicts:
-            level_range  : str   — e.g. "6,250+" or "6,105–6,250"
+            level_range  : str   — e.g. "6,250+" or "5,784–6,250"
             otm_lower_pct: float — lower bound of range relative to spot (%)
             prob_pct     : float — probability of ending in this range (%)
             mean_payout  : float — probability-weighted mean payout ($)
         """
-        paths   = self._cache.paths             # (n_paths, n_weeks)
-        n_weeks = paths.shape[1]
+        import math
+
+        paths    = self._cache.paths
+        n_weeks  = paths.shape[1]
         week_idx = min((dte - 1) // 5, n_weeks - 1)
-        terminal = paths[:, week_idx]           # (n_paths,)
-        weights  = self._path_weights           # (n_paths,), sums to 1.0
+        terminal = paths[:, week_idx]   # (n_paths,)
+        weights  = self._path_weights   # (n_paths,), sums to 1.0
         spot     = self._cache.current_price
-        step     = spot * step_pct
 
         rows: list[dict] = []
 
@@ -969,33 +978,41 @@ class GJREntropyModel:
             "mean_payout":   0.0,
         })
 
-        # ── Rows 2+: step_pct×spot increments below strike ───────────────
+        # ── Find first even-step boundary strictly below strike ───────────
+        # Even boundaries: spot*(1 − k*step_pct) for k = 1, 2, …
+        # k_first = smallest k such that spot*(1 − k*step_pct) < strike
+        otm_frac = max(0.0, 1.0 - strike / spot)
+        k_first  = max(1, int(math.floor(otm_frac / step_pct)) + 1)
+
+        # ── Rows 2+: even-step boundaries going down ─────────────────────
         hi = strike
-        for _ in range(max_rows):
-            lo   = hi - step
+        for k in range(k_first, k_first + max_rows):
+            lo   = spot * (1.0 - k * step_pct)
             mask = (terminal >= lo) & (terminal < hi)
             prob = float(np.sum(weights[mask]))
-            if prob < 1e-5:
-                break
-            t_in    = terminal[mask]
-            w_in    = weights[mask]
-            payouts = np.maximum(strike - t_in, 0.0) * 100.0
+
+            if round(prob * 100, 2) < min_prob_pct:
+                break   # too thin — sweep remainder into catch-all
+
+            t_in     = terminal[mask]
+            w_in     = weights[mask]
+            payouts  = np.maximum(strike - t_in, 0.0) * 100.0
             mean_pay = float(np.dot(w_in, payouts) / prob)
             rows.append({
                 "level_range":   f"{int(round(lo)):,}–{int(round(hi)):,}",
-                "otm_lower_pct": round((lo / spot - 1.0) * 100, 1),
+                "otm_lower_pct": round(-k * step_pct * 100, 1),  # clean round number
                 "prob_pct":      round(prob * 100, 2),
                 "mean_payout":   round(mean_pay, 0),
             })
             hi = lo
 
-        # ── Tail catch-all (everything below the last explicit bucket) ────
+        # ── Catch-all: everything below the last explicit boundary ────────
         mask_tail = terminal < hi
         prob_tail = float(np.sum(weights[mask_tail]))
         if prob_tail > 1e-5:
-            t_in    = terminal[mask_tail]
-            w_in    = weights[mask_tail]
-            payouts = np.maximum(strike - t_in, 0.0) * 100.0
+            t_in     = terminal[mask_tail]
+            w_in     = weights[mask_tail]
+            payouts  = np.maximum(strike - t_in, 0.0) * 100.0
             mean_pay = float(np.dot(w_in, payouts) / prob_tail)
             rows.append({
                 "level_range":   f"<{int(round(hi)):,}",
