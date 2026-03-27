@@ -163,7 +163,7 @@ const COLUMNS = [
   },
   {
     title: 'DTE', field: 'dte', sorter: 'number', width: 60, minWidth: 60,
-    tooltip: 'Days to expiration. Filter shows only 180–540 DTE by default (6–18 months for set-and-forget).',
+    tooltip: 'Calendar days to expiration (derived from CBOE expiry date). Filter shows only 180–730 DTE by default (6–24 months). Note: the Model Builder tab uses trading days (252/yr) — the two are different scales.',
   },
   {
     title: 'Strike', field: 'strike', sorter: 'number', width: 78, minWidth: 72,
@@ -417,8 +417,19 @@ function setStatus(msg) {
   el.style.display = msg ? 'inline' : 'none';
 }
 
-function showHelp() { $('helpModal').style.display = 'flex'; }
+function showHelp() {
+  const isModel = $('tabModel').classList.contains('tab-active');
+  showHelpTab(isModel ? 'model' : 'grid');
+  $('helpModal').style.display = 'flex';
+}
 function hideHelp() { $('helpModal').style.display = 'none'; }
+function showHelpTab(name) {
+  const isModel = name === 'model';
+  $('helpGrid').style.display  = isModel ? 'none' : '';
+  $('helpModel').style.display = isModel ? '' : 'none';
+  $('helpTabGrid').classList.toggle('help-tab-active', !isModel);
+  $('helpTabModel').classList.toggle('help-tab-active', isModel);
+}
 
 function updateGarchDisabledState() {
   const isGarch = $('modelSelect')?.value === 'garch_ep';
@@ -533,8 +544,15 @@ function switchTab(name) {
   $('tabContentModel').style.display   = isOptions ? 'none' : '';
   $('tabOptions').classList.toggle('tab-active', isOptions);
   $('tabModel').classList.toggle('tab-active', !isOptions);
-  if (!isOptions) mbOnShow();
-  else setGridHeight();
+  if (!isOptions) {
+    mbOnShow();
+  } else {
+    if (mbParamsChanged) {
+      mbParamsChanged = false;
+      mbAutoCommit();
+    }
+    setGridHeight();
+  }
 }
 
 // ===========================================================================
@@ -553,6 +571,7 @@ let pathChart = null;
 let termChart = null;
 let mbPreviewTimer    = null;
 let mbLastPreview     = null;
+let mbParamsChanged   = false;   // true when MB params changed since last grid apply
 let currentSurfaceMode = 'market';
 
 // ── Bucket table ─────────────────────────────────────────────────────────
@@ -603,13 +622,14 @@ function mbAddRow() {
   const buckets = mbGetBuckets();
   buckets.push([Math.round(buckets.length ? buckets[buckets.length - 1][0] + 500 : 4000), 0.5]);
   mbRenderBuckets(buckets);
+  mbMarkChanged();
 }
 
 function mbDeleteRow(i) {
   const buckets = mbGetBuckets();
   buckets.splice(i, 1);
   mbRenderBuckets(buckets);
-  mbSchedulePreview();
+  mbMarkChanged();
 }
 
 function mbSortBuckets() {
@@ -619,10 +639,11 @@ function mbSortBuckets() {
 
 function mbResetBuckets() {
   mbRenderBuckets(DEFAULT_BUCKETS);
-  mbSchedulePreview();
+  mbMarkChanged();
 }
 
-function mbOnBucketChange() { mbSchedulePreview(); }
+function mbMarkChanged() { mbParamsChanged = true; mbSchedulePreview(); }
+function mbOnBucketChange() { mbMarkChanged(); }
 
 // ── Init status polling ──────────────────────────────────────────────────
 
@@ -652,6 +673,7 @@ function mbPollStatus() {
       // Auto-apply GARCH/EP to the grid once simulation completes
       if (!mbGarchReadyFetched) {
         mbGarchReadyFetched = true;
+        mbParamsChanged = false;  // auto-applied; no extra commit needed on tab switch
         const sel = $('modelSelect');
         if (sel) { sel.value = 'garch_ep'; updateGarchDisabledState(); }
         showGridOverlay(false);   // reveal grid before fetch so it renders correctly
@@ -676,12 +698,17 @@ function mbReinit() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  }).then(() => {
+  }).then(r => {
+    if (!r.ok) return r.text().then(t => { throw new Error(`Reinit failed (${r.status}): ${t.slice(0,120)}`); });
     $('mbInitStatus').className = 'mb-init-status loading';
     $('mbInitStatus').textContent = 'Restarting simulation…';
     mbLastPreview = null;
     mbGarchReadyFetched = false;
+    mbParamsChanged = true;
     setTimeout(mbPollStatus, 1000);
+  }).catch(err => {
+    $('mbInitStatus').className = 'mb-init-status error';
+    $('mbInitStatus').textContent = '⚠ ' + err.message;
   });
 }
 
@@ -715,6 +742,10 @@ async function mbPreview() {
       mbPreviewTimer = setTimeout(mbPreview, 3000);
       return;
     }
+    const ct = resp.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      throw new Error(`Server error (${resp.status}) — check server logs`);
+    }
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
     mbLastPreview = data;
@@ -732,39 +763,25 @@ async function mbPreview() {
 
 // ── Commit ───────────────────────────────────────────────────────────────
 
-async function mbCommit() {
+// Silently commit MB params to the grid (called automatically on tab switch).
+async function mbAutoCommit() {
   const buckets    = mbGetBuckets();
   const confidence = parseFloat($('mbConfidence').value);
-  if (!buckets.length) {
-    $('mbError').textContent = '⚠ Add at least one bucket row before applying.';
-    $('mbError').style.display = 'block';
-    return;
-  }
-  $('mbCommitSpinner').style.display = 'inline-block';
-  $('mbCommitBtn').disabled = true;
-  $('mbCommitStatus').style.display = 'none';
-  $('mbError').style.display = 'none';
+  if (!buckets.length) return;
 
+  showGridOverlay(true);
   try {
     const resp = await fetch('/api/model/commit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ buckets, confidence }),
     });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-    $('mbCommitStatus').textContent =
-      `✓ Applied to grid at ${data.meta.configured_at} — switch to Options Grid tab and select GARCH/EP model`;
-    $('mbCommitStatus').style.display = 'block';
-    // Auto-select garch_ep in options tab
+    if (!resp.ok) { showGridOverlay(false); return; }
     const sel = $('modelSelect');
-    if (sel) { sel.value = 'garch_ep'; debouncedFetch(); }
-  } catch (err) {
-    $('mbError').textContent = '⚠ ' + err.message;
-    $('mbError').style.display = 'block';
-  } finally {
-    $('mbCommitSpinner').style.display = 'none';
-    $('mbCommitBtn').disabled = false;
+    if (sel) { sel.value = 'garch_ep'; updateGarchDisabledState(); }
+    fetchOptions(false);
+  } catch (_) {
+    showGridOverlay(false);
   }
 }
 
@@ -813,12 +830,11 @@ function mbRenderPriorTable(stats, buckets, marketPriors) {
       : '';
 
     const tr = document.createElement('tr');
-    if (s.is_tilt_threshold) tr.className = 'tilt-row';
     tr.innerHTML = `
       <td>>−${(s.drawdown * 100).toFixed(0)}%</td>
       <td>${s.level.toLocaleString()}</td>
-      <td>${(s.prob * 100).toFixed(0)}%</td>
       <td class="${viewClass}">${viewStr}</td>
+      <td>${(s.prob * 100).toFixed(0)}%</td>
       <td class="${mktClass}">${marketStr}</td>`;
     tbody.appendChild(tr);
   });
@@ -910,13 +926,17 @@ function mbRenderSurfaceChart(surface, mode, currentPrice) {
   // ── Helper: EP quantile scatter traces ──────────────────────────────────
   function addEPLines(isPrior, xVals, opacity=0.9) {
     const [q10, q50, q90] = epQuantiles(isPrior);
+    const pfx = isPrior ? 'GARCH ' : 'EP ';
+    // Skip index 0 (t=0, all paths at spot — degenerate point causes a vertical
+    // spike artifact where P10/P50/P90 converge before diverging).
+    const x1 = xVals.slice(1);
     [
-      { qs: q10, name: 'P10', dash: 'dash',  color: `rgba(160,160,255,${opacity})` },
-      { qs: q50, name: 'P50', dash: 'solid', color: `rgba(255,255,255,${opacity})` },
-      { qs: q90, name: 'P90', dash: 'dash',  color: `rgba(140,255,160,${opacity})` },
+      { qs: q10, name: `${pfx}P10`, dash: 'dash',  color: `rgba(160,160,255,${opacity})` },
+      { qs: q50, name: `${pfx}P50`, dash: 'solid', color: `rgba(255,255,255,${opacity})` },
+      { qs: q90, name: `${pfx}P90`, dash: 'dash',  color: `rgba(140,255,160,${opacity})` },
     ].forEach(({ qs, name, dash, color }) => {
       traces.push({
-        type: 'scatter', mode: 'lines', x: xVals, y: qs, name,
+        type: 'scatter', mode: 'lines', x: x1, y: qs.slice(1), name,
         line: { color, width: 1.5, dash, shape: 'spline', smoothing: 0.8 },
         hovertemplate: `${name}: %{y:,.0f}<extra></extra>`,
       });
@@ -926,7 +946,7 @@ function mbRenderSurfaceChart(surface, mode, currentPrice) {
   // ── Helper: B-L quantile scatter traces ─────────────────────────────────
   function addBLLines(opacity=0.9) {
     if (!blSlices.length) return;
-    const xMo = blSlices.map(sl => +(sl.dte / 21).toFixed(1));
+    const xMo = blSlices.map(sl => +(sl.dte / 30.44).toFixed(1));
     const [b10, b50, b90] = blQuantiles([0.10, 0.50, 0.90]);
     [
       { qs: b10, name: 'Mkt P10', dash: 'dash',  color: `rgba(0,220,255,${opacity})` },
@@ -946,10 +966,11 @@ function mbRenderSurfaceChart(surface, mode, currentPrice) {
   // ── Helper: B-L density as filled sideways profiles (one polygon per expiry)
   function addBLProfiles(scaleMultiplier) {
     if (!blSlices.length) return false;
-    const xSpan  = Math.max(...blSlices.map(sl => sl.dte / 21)) - Math.min(...blSlices.map(sl => sl.dte / 21));
-    const blScale = Math.max(xSpan, 2) * (scaleMultiplier || 0.12);
+    // Fixed base span (≈14 calendar months) keeps curve widths consistent
+    // regardless of how many slices or how far the x-axis extends.
+    const blScale = 14 * (scaleMultiplier || 0.06);
     blSlices.forEach((sl, si) => {
-      const mo   = +(sl.dte / 21).toFixed(2);
+      const mo   = +(sl.dte / 30.44).toFixed(2);
       const peak = Math.max(...sl.density);
       if (peak <= 0) return;
       const visX = [], visY = [];
@@ -976,45 +997,44 @@ function mbRenderSurfaceChart(surface, mode, currentPrice) {
     return blSlices.length > 0;
   }
 
-  if (mode === 'market') {
-    // Market-only view: sideways B-L density profiles + B-L quantile lines.
-    if (!addBLProfiles(0.14)) {
-      traces.push({ type: 'scatter', x: [], y: [], name: 'No market data yet' });
-    }
-    addBLLines(0.95);
+  // All modes: B-L density profiles + B-L quantile lines as the base layer.
+  if (!addBLProfiles(0.07)) {
+    traces.push({ type: 'scatter', x: [], y: [], name: 'No market data yet' });
+  }
+  addBLLines(0.95);
 
-  } else if (mode === '3d') {
-    const data2d = surface.posterior;
-    const zT = Array.from({length: nL}, (_, li) => data2d.map(row => row[li]));
-    traces.push({
-      type: 'surface',
-      z: zT, x: timesMonth, y: levels,
-      colorscale: 'Viridis', showscale: false,
-    });
-
-  } else {
-    // 'posterior' or 'prior': EP heatmap + EP quantile lines + faint B-L profiles
-    const isPrior = mode === 'prior';
-    const data2d  = isPrior ? surface.prior : surface.posterior;
-    traces.push(heatmapTrace(data2d, timesMonth));
-    addEPLines(isPrior, timesMonth);
-    addBLProfiles(0.08);   // faint B-L profiles overlaid for comparison
+  // 'My View' and 'GARCH Prior' overlay their EP quantile lines on top.
+  if (mode === 'posterior' || mode === 'prior') {
+    addEPLines(mode === 'prior', timesMonth, 0.85);
   }
 
   // Dotted red horizontal line at current SPX level
-  const spxShapes = (currentPrice && mode !== '3d') ? [{
+  const spxShapes = currentPrice ? [{
     type: 'line', xref: 'paper', yref: 'y',
     x0: 0, x1: 1, y0: currentPrice, y1: currentPrice,
     line: { color: 'rgba(255, 80, 80, 0.65)', width: 1.5, dash: 'dot' },
   }] : [];
 
+  // Expiry date annotations above each B-L violin
+  const blAnnotations = blSlices.length ? blSlices.map(sl => ({
+    x: +(sl.dte / 30.44).toFixed(1),
+    y: 1.01,
+    xref: 'x', yref: 'paper',
+    text: sl.expiry_label || `${Math.round(sl.dte / 30)}mo`,
+    showarrow: false,
+    font: { size: 9, color: 'rgba(0, 200, 255, 0.75)' },
+    textangle: -55,
+    xanchor: 'left',
+  })) : [];
+
   const layout = {
     paper_bgcolor: 'rgba(0,0,0,0)',
     plot_bgcolor:  'rgba(0,0,0,0)',
-    margin: { l: 65, r: 10, t: 10, b: 40 },
+    margin: { l: 65, r: 10, t: 30, b: 40 },
     height: 320,
     shapes: spxShapes,
-    xaxis: { title: 'Months', color: '#aaa', gridcolor: 'rgba(255,255,255,0.07)' },
+    annotations: blAnnotations,
+    xaxis: { title: 'Months', color: '#aaa', gridcolor: 'rgba(255,255,255,0.07)', dtick: 3, tick0: 0, range: [0, 24] },
     yaxis: {
       title: 'SPX Level', color: '#aaa', gridcolor: 'rgba(255,255,255,0.07)',
       type: 'log',
@@ -1023,12 +1043,6 @@ function mbRenderSurfaceChart(surface, mode, currentPrice) {
     },
     legend: { font: { color: '#aaa', size: 10 }, bgcolor: 'rgba(0,0,0,0)' },
     font: { color: '#aaa', size: 11 },
-    ...(mode === '3d' ? { scene: {
-      xaxis: { title: 'Months', color: '#aaa' },
-      yaxis: { title: 'SPX', color: '#aaa' },
-      zaxis: { title: 'Density', color: '#aaa' },
-      bgcolor: 'rgba(0,0,0,0)',
-    }} : {}),
   };
 
   Plotly.react('surfaceChart', traces, layout, { responsive: true, displayModeBar: false });

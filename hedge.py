@@ -133,7 +133,7 @@ def filter_puts(df: pd.DataFrame, p: Params, spx_spot: float) -> Tuple[pd.DataFr
         ("type == PUT",      df["type"] == "PUT"),
         ("bid > 0",          df["bid"].notna() & (df["bid"] > 0)),
         ("OI >= 100",        df["open_interest"].notna() & (df["open_interest"] >= 100)),
-        ("DTE 180-540",      df["dte"].between(180, 540)),
+        ("DTE 180-730",      df["dte"].between(180, 730)),
         ("IV 0.05-1.50",     df["iv"].notna() & df["iv"].between(0.05, 1.50)),
         ("strike 55-98% spot", df["strike"].between(0.55 * spx_spot, 0.98 * spx_spot)),
         ("spread <= 25%",    _spread_ok(df)),

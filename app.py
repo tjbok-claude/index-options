@@ -57,6 +57,7 @@ _garch_state: dict = {
     "meta":     None,   # dict of last-committed model params
     "loading":  False,
     "error":    None,
+    "auto_reinit_done": False,  # True once boot-price correction has fired
 }
 _GARCH_DEFAULT_PRICE = 6500.0  # fallback if CBOE not yet fetched
 
@@ -261,14 +262,19 @@ def api_options():
         fetched_at = entry.get("fetched_at")
 
     # --- Auto-reinit GARCH if it used the fallback price ---
-    # GARCH starts at server boot before CBOE is fetched, using _GARCH_DEFAULT_PRICE.
-    # On the first successful SPX fetch, restart with the real price if they differ.
+    # Fires at most once per server run: if CBOE was unavailable at boot, GARCH
+    # started with _GARCH_DEFAULT_PRICE.  The first successful SPX fetch corrects
+    # it.  The flag prevents this from re-firing every request when SPX happens
+    # to be near the fallback value (which would clear any committed EP model).
     spx_spot = underlying["current_price"]
     if symbol == "SPX" and spx_spot:
         with _garch_lock:
-            gc = _garch_state["cache"]
-            gl = _garch_state["loading"]
-        if not gl and (gc is None or abs(gc.current_price - _GARCH_DEFAULT_PRICE) < 50):
+            gc   = _garch_state["cache"]
+            gl   = _garch_state["loading"]
+            done = _garch_state["auto_reinit_done"]
+        if not done and not gl and (gc is None or abs(gc.current_price - _GARCH_DEFAULT_PRICE) < 50):
+            with _garch_lock:
+                _garch_state["auto_reinit_done"] = True
             start_garch_init(price=spx_spot, annual_drift_pct=7.0)
 
     # --- Filter & score ---
@@ -567,7 +573,7 @@ def _compute_bl_surface_slices(
         print("BL surface slices: no CBOE data available")
         return []
     try:
-        from datetime import date as _date
+        from datetime import date as _date, timedelta as _timedelta
         from scipy.interpolate import interp1d
         today = _date.today()
         tmp = df[df["ask"] > 0].copy()
@@ -584,11 +590,11 @@ def _compute_bl_surface_slices(
 
         slices = []
         expiry_groups = [(dte, grp) for dte, grp in tmp.groupby("dte")
-                         if 30 <= dte <= 504]
-        print(f"BL surface slices: {len(expiry_groups)} expiries in 30-504d range")
+                         if 30 <= dte <= 730]
+        print(f"BL surface slices: {len(expiry_groups)} expiries in 30-730d range")
 
         for dte_val, grp in expiry_groups:
-            T    = dte_val / 252.0
+            T    = dte_val / 365.0   # dte_val is calendar days; T in years
             disc = np.exp(r * T)
 
             # Quality filter: drop zero-OI rows and excessively wide spreads.
@@ -613,7 +619,11 @@ def _compute_bl_surface_slices(
                 ks_call, ds_call = _bl_fd_density(
                     calls["strike"].values.astype(float), _mids(calls), disc)
 
-            if len(ks_put) + len(ks_call) < 3:
+            # Require meaningful data from both sides.  Long-dated LEAPS can have
+            # only 3-4 listed OTM call strikes → _bl_fd_density returns 1 interior
+            # point.  Requiring ≥2 call points would drop all LEAPS; ≥1 is enough
+            # since the median sanity-check below catches one-sided distributions.
+            if len(ks_put) < 2 or len(ks_call) < 1:
                 continue
 
             # Merge put and call density points
@@ -640,14 +650,18 @@ def _compute_bl_surface_slices(
             if total <= 0:
                 continue
             pdf /= total
-            slices.append({"dte": int(dte_val), "density": pdf.tolist()})
+            expiry_label = (today + _timedelta(days=int(dte_val))).strftime('%b %Y')
+            cum = np.cumsum(pdf)
+            median_price = float(levels[np.searchsorted(cum, 0.5, side='left')])
+            print(f"BL slice DTE={dte_val} ({expiry_label}): median={median_price:.0f} ({100*median_price/current_price:.0f}% of spot)")
+            slices.append({"dte": int(dte_val), "expiry_label": expiry_label, "density": pdf.tolist()})
 
         slices.sort(key=lambda x: x["dte"])
 
-        # Reduce to ~8 representative expiries at roughly 1.5, 3, 6, 9, 12, 18, 24 months
+        # Reduce to ~9 representative expiries at roughly 3-month intervals up to 24 months
         # (calendar days): avoids cluttered near-term weekly expiries
-        if len(slices) > 8:
-            targets_cal = [45, 91, 136, 182, 273, 365, 456, 504]
+        if len(slices) > 9:
+            targets_cal = [45, 91, 182, 273, 365, 456, 547, 638, 730]
             picked, used = [], set()
             for t in targets_cal:
                 best = min(slices, key=lambda s: abs(s["dte"] - t))
@@ -676,19 +690,28 @@ def api_model_preview():
     if cache is None:
         return jsonify({"error": "GARCH simulation not ready yet"}), 503
 
-    prior_stats, _, _ = cache.prior_stats()
+    try:
+        prior_stats, _, _ = cache.prior_stats()
+    except Exception as exc:
+        return jsonify({"error": f"prior_stats failed: {exc}"}), 500
 
     if not buckets:
         # Pure GARCH — no EP
-        model = cache.make_model()
+        try:
+            model = cache.make_model()
+        except Exception as exc:
+            return jsonify({"error": f"make_model failed: {exc}"}), 500
     else:
         try:
             model = _run_ep(buckets, confidence)
         except Exception as exc:
             return jsonify({"error": str(exc)}), 400
 
-    paths, groups, stats = model.quintile_paths()
-    terminal             = model.terminal_distribution(query_dte)
+    try:
+        paths, groups, stats = model.quintile_paths()
+        terminal             = model.terminal_distribution(query_dte)
+    except Exception as exc:
+        return jsonify({"error": f"path simulation failed: {exc}"}), 500
 
     # Market column: B-L-reweighted GARCH running-min probabilities
     # (same metric as GARCH Prior / Your View — directly comparable)

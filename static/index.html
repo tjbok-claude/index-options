@@ -8,7 +8,7 @@
   <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.27.0/plotly.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=9">
+  <link rel="stylesheet" href="/static/style.css?v=10">
 </head>
 <body>
 
@@ -36,20 +36,24 @@
 <div id="helpModal" class="help-modal" style="display:none" onclick="if(event.target===this)hideHelp()">
   <div class="help-content">
     <div class="help-header">
-      <span class="help-title">SPX Hedge Ranker — Reference Guide</span>
+      <div class="help-tab-strip">
+        <button id="helpTabGrid"  class="help-tab-btn help-tab-active" onclick="showHelpTab('grid')">Options Grid</button>
+        <button id="helpTabModel" class="help-tab-btn"                 onclick="showHelpTab('model')">Model Builder</button>
+      </div>
       <button class="help-close" onclick="hideHelp()">✕</button>
     </div>
     <div class="help-body">
 
+<!-- ══ OPTIONS GRID HELP ══════════════════════════════════ -->
+<div id="helpGrid">
+
 <h2>What this tool does</h2>
 <p>Fetches the live CBOE SPX options chain (delayed ~15 min), scores every put by <strong>Expected Payoff Ratio (EPR)</strong>, and ranks them so you can find the most efficient tail-hedge contracts for a $5M equity portfolio held in a Roth IRA.</p>
 
-<h2>Recommended workflow</h2>
+<h2>Workflow</h2>
 <ol>
-  <li>Open the <strong>Model Builder</strong> tab. The GJR-GARCH simulation starts automatically in the background (~15s). While it loads, you can read the prior drawdown statistics when they appear.</li>
-  <li>Enter your crash probability views in the bucket table (or leave defaults), set the <strong>confidence</strong> slider, and watch the quintile path chart update automatically.</li>
-  <li>Click <strong>Apply to options grid</strong>. This commits the GARCH/EP model and switches the grid to use it — the <em>GARCH/EP</em> scenario model is selected for you.</li>
-  <li>Back on the <strong>Options Grid</strong> tab, adjust <strong>Roth multiplier</strong> and <strong>Contracts</strong> to match your situation, then sort by <strong>EPR</strong>.</li>
+  <li>Configure your probability model on the <strong>Model Builder</strong> tab (GARCH/EP model runs automatically in the background). Switching back here applies your model automatically.</li>
+  <li>Adjust <strong>Roth multiplier</strong> and <strong>Contracts</strong> to match your situation, then sort by <strong>EPR</strong>.</li>
   <li>Check <strong>Sprd%</strong> and <strong>vs Theo%</strong> to filter out illiquid or unreliably-priced contracts.</li>
   <li>Use <strong>Ann%</strong> to sanity-check total cost. A 1%/yr insurance budget on a $5M portfolio is $50K/yr.</li>
 </ol>
@@ -60,7 +64,7 @@
 <dl>
   <dt>Expiry</dt><dd>Expiration date (YYYY-MM-DD).</dd>
   <dt>Ses</dt><dd><strong>AM</strong> = standard SPX (cash-settled at open on expiry day). <strong>PM</strong> = SPXW weekly (settled at close). AM has less pin-risk for multi-month holds.</dd>
-  <dt>DTE</dt><dd>Days to expiration. The filter defaults to 180–540 days (6–18 months).</dd>
+  <dt>DTE</dt><dd>Calendar days to expiration (from CBOE expiry date). The filter defaults to 180–730 calendar days (6–24 months). Not the same as the Model Builder's trading-day DTE (252 trading days = 1 year ≈ 365 calendar days).</dd>
   <dt>Strike</dt><dd>Option strike price in SPX index points.</dd>
   <dt>OTM%</dt><dd>(strike / SPX − 1) × 100. A value of −20% means the strike is 20% below current SPX — roughly where a "deep correction" scenario pays off.</dd>
 </dl>
@@ -109,7 +113,7 @@
   </dd>
 
   <dt>CrEff</dt>
-  <dd>Crash Efficiency — same as EPR but only counting crash scenarios in the numerator (bull/flat/bear excluded). Answers: <em>"how efficiently does this put buy crash protection specifically?"</em> A deeply OTM put has high CrEff (only pays in a real crash) but lower EPR. A put closer to the money has higher EPR but lower CrEff. Use CrEff when you care primarily about tail protection rather than overall expected value.</dd>
+  <dd>Crash Efficiency — same as EPR but counting only crash scenarios in the numerator. Answers: <em>"how efficiently does this put buy crash protection specifically?"</em> A deeply OTM put has high CrEff but lower EPR. A put closer to the money has higher EPR but lower CrEff. Use CrEff when you care primarily about tail protection rather than overall expected value.</dd>
 </dl>
 
 <h3>Cost metrics</h3>
@@ -129,34 +133,115 @@
 
 <h2>Filters</h2>
 <dl>
-  <dt>DTE min / max</dt><dd>Filter by days to expiration. Default 180–540 (6–18 months). Widen to see shorter-dated puts, which are cheaper but require more frequent rolling.</dd>
+  <dt>DTE min / max</dt><dd>Filter by <strong>calendar days</strong> to expiration (e.g. 180 ≈ 6 months, 365 ≈ 1 year, 730 ≈ 2 years). Default 180–730. Widen to see shorter-dated puts, which are cheaper but require more frequent rolling. Note: the Model Builder tab uses trading days (252/yr) — a different scale.</dd>
   <dt>OI min</dt><dd>Minimum open interest. Default 100. Raise to 500+ if you want only the most liquid strikes.</dd>
   <dt>Vol min</dt><dd>Minimum today's volume. Useful for confirming that a mid-price reflects real trading, but LEAPS often trade lightly — set to 0 unless you need same-day fills.</dd>
-  <dt>OTM% min / max</dt><dd>Filter by how far out of the money the strike is. Default max is 0% (puts only — all below spot). Set min to e.g. −30% to exclude very deep strikes; set max to e.g. −10% to exclude near-the-money puts.</dd>
+  <dt>OTM% min / max</dt><dd>Filter by how far out of the money the strike is. Default max is 0% (puts only). Set min to e.g. −30% to exclude very deep strikes; set max to e.g. −10% to exclude near-the-money puts.</dd>
   <dt>Session</dt><dd>AM = standard SPX (cash-settled at open). PM = SPXW weekly (settled at close). AM is generally preferred for multi-month holds to avoid close-of-day gamma risk near expiry.</dd>
 </dl>
 
-<h2>Scenario model and probability inputs</h2>
-<p>The <strong>Scenario model</strong> selector controls how crash probabilities are assigned to each option. The <strong>GARCH/EP</strong> model (default) is the most rigorous option and is configured on the Model Builder tab — when it is active, the <em>P(crash)</em> and <em>Horizon</em> inputs have no effect and are greyed out.</p>
-<p>If you prefer a simpler approach without running the GARCH model, you can switch to one of the two manual models:</p>
+<h2>Scenario model</h2>
+<p>The <strong>Scenario model</strong> selector controls how crash probabilities are assigned to each option. <strong>GARCH/EP</strong> (default) uses the full simulation from the Model Builder tab and is the most rigorous option — P(crash) and Horizon inputs are greyed out when it is active.</p>
+<p>Simpler fallback models (no GARCH required):</p>
 <dl>
   <dt>survival</dt>
-  <dd>You specify P(crash) and Horizon. The model scales the crash probability to each option's DTE using a constant-hazard (Poisson) formula: a 6-month put is assigned a lower P(crash) than an 18-month put, proportional to the time window. This is the most defensible simple approach for cross-expiry comparison.</dd>
+  <dd>You specify P(crash) and Horizon. Crash probability scales to each option's DTE using a constant-hazard formula: a 6-month put gets a lower P(crash) than an 18-month put, proportional to the time window. Best simple approach for cross-expiry comparison.</dd>
   <dt>flat</dt>
-  <dd>The same P(crash) is applied to every option regardless of DTE. Useful as a reference or when you want to directly state a probability for a specific expiry window.</dd>
-  <dt>P(crash)</dt>
-  <dd><em>(survival and flat models only)</em> Your subjective probability of a ≥20% SPX drawdown over the hold Horizon. Default 0.55. The single biggest lever — raise it if you're bearish.</dd>
-  <dt>Horizon (months)</dt>
-  <dd><em>(survival model only)</em> The reference window over which your P(crash) is stated. A 6-month put in a 18-month horizon gets a lower crash probability than an 18-month put. Does not affect which options appear — use the DTE filter for that.</dd>
+  <dd>The same P(crash) applied to every option regardless of DTE. Useful as a quick reference or when you want to state a probability for a specific expiry window directly.</dd>
+  <dt>P(crash)</dt><dd><em>(survival / flat only)</em> Probability of ≥20% SPX drawdown over the horizon. Default 0.55.</dd>
+  <dt>Horizon (months)</dt><dd><em>(survival only)</em> Reference window for P(crash). Does not affect which options appear — use DTE filter for that.</dd>
 </dl>
 
 <h2>Other parameters</h2>
 <dl>
   <dt>Roth multiplier</dt>
-  <dd>Tax advantage of a Roth IRA. A $1 payoff inside a Roth is worth more than $1 in a taxable account because gains are tax-free. At a 20% capital-gains rate, the multiplier is 1.25. Raise if you're in a higher bracket.</dd>
+  <dd>Tax advantage of a Roth IRA. At a 20% capital-gains rate, $1 of Roth payoff is worth $1.25 in taxable-equivalent terms. Raise if you're in a higher bracket.</dd>
   <dt>Contracts (0 = auto)</dt>
-  <dd>Number of contracts to buy. 0 auto-sizes from portfolio beta: N = ($5M × β) / (SPX × 100). At SPX ≈ 6,500 this gives ~7 contracts for a full hedge.</dd>
+  <dd>Number of contracts. 0 auto-sizes from portfolio beta: N = ($5M × β) / (SPX × 100). At SPX ≈ 6,500 this gives ~7 contracts for a full hedge.</dd>
+  <dt>Symbol / Index beta</dt>
+  <dd>Load a different options chain (NDX, RUT). Index beta scales the SPX crash return to the target index — e.g. NDX historically falls harder than SPX in tech-driven crashes, use ~1.3.</dd>
 </dl>
+
+</div><!-- end #helpGrid -->
+
+<!-- ══ MODEL BUILDER HELP ══════════════════════════════════ -->
+<div id="helpModel" style="display:none">
+
+<h2>What the Model Builder does</h2>
+<p>The Model Builder lets you construct a probability distribution over future SPX paths that blends two inputs: a <strong>statistical prior</strong> from a GARCH simulation and your own <strong>subjective crash views</strong>. The resulting distribution is used to score every put option on the Options Grid tab.</p>
+
+<h2>Workflow</h2>
+<ol>
+  <li>Wait for the GARCH simulation to finish (~15s). The status bar shows "Ready" when done.</li>
+  <li>Review the <strong>YOUR VIEW VS MODEL / MARKET</strong> table — it shows GARCH prior and market-implied probabilities as a baseline.</li>
+  <li>Enter your crash probability views in the bucket table, adjust the <strong>EP Confidence</strong> slider, and watch the charts update.</li>
+  <li>Switch to the <strong>Options Grid</strong> tab — your model is committed automatically and the grid refreshes.</li>
+</ol>
+
+<h2>The GARCH prior</h2>
+<p><strong>GJR-GARCH</strong> (Glosten-Jagannathan-Runkle GARCH) is a statistical volatility model fitted to 30+ years of SPX daily returns. It captures two well-documented features of equity markets:</p>
+<ul>
+  <li><strong>Volatility clustering</strong> — calm periods tend to stay calm; turbulent periods tend to stay turbulent. GARCH models this by letting today's volatility depend on recent squared returns.</li>
+  <li><strong>Leverage effect</strong> — down moves increase future volatility more than up moves of the same size. The GJR asymmetric term captures this asymmetry explicitly.</li>
+</ul>
+<p>The server simulates thousands of daily SPX paths over a 2-year horizon using this fitted model. Each path represents one possible future. The collection of paths forms the <strong>GARCH prior</strong> — a probability distribution grounded in historical market behavior.</p>
+<p><strong>Annual drift</strong> sets the long-run expected return used in the simulation. Default 7%/yr (conservative long-run real return). The GARCH-fitted drift (~13–14%) reflects survivorship-biased historical data and overstates likely future returns. Set to 0 for a flat, risk-neutral-style projection.</p>
+<p><strong>Re-init simulation</strong> reruns the GARCH fit and path generation from scratch using the current SPX price and your chosen drift. Use this if you change the drift or if the price has moved significantly since the last init.</p>
+
+<h2>Entropy Pooling — blending your views</h2>
+<p><strong>Entropy Pooling (EP)</strong> is a technique for combining a prior probability distribution with subjective views. It finds the probability distribution that is as close as possible to the prior (in the sense of minimum relative entropy, or KL-divergence) while exactly satisfying your specified constraints.</p>
+<p>In practice, EP reweights the GARCH paths: paths consistent with your views get more weight; paths inconsistent with them get less. The shape of the distribution remains GARCH-like — you're tilting it, not replacing it.</p>
+
+<h3>The bucket table — entering your views</h3>
+<p>Each row in the table states a constraint on the <strong>2-year running minimum</strong> of SPX:</p>
+<p style="text-align:center"><em>P(SPX drops below [Level] at any point in the next 2 years) = [Cum Prob]</em></p>
+<p>For example, "SPX 4170 → 0.25" means you believe there is a 25% chance SPX will touch 4,170 or lower within 2 years. Enter rows in ascending order of level; the "Move %" column shows how far each level is from the current spot.</p>
+<p>You do not need to fill in every row — EP interpolates between your constraints and uses the GARCH prior outside the range you specify. Leave rows at their defaults if you have no strong view.</p>
+
+<h3>EP Confidence slider</h3>
+<p>Controls how strongly your views are imposed:</p>
+<ul>
+  <li><strong>0.0</strong> — pure GARCH prior; your bucket entries are ignored entirely</li>
+  <li><strong>1.0</strong> — views fully imposed; paths are reweighted to exactly match your stated probabilities</li>
+  <li><strong>0.75</strong> (default) — a blend: your views shift the distribution but the GARCH prior acts as a regularizer, preventing extreme reweighting</li>
+</ul>
+<p>Reduce confidence if the EP solution looks too extreme (e.g. very heavy tails or very thin tails relative to what you intended).</p>
+
+<h2>The market-implied distribution (B-L / RN)</h2>
+<p>The <strong>Market (B-L)</strong> view is derived from live SPX options prices using the <strong>Breeden-Litzenberger</strong> formula, which extracts a risk-neutral probability density from the cross-section of option prices at each expiry. Specifically, the second derivative of the call price with respect to strike gives the market's implied probability density over terminal SPX levels.</p>
+<p>This density is used in two ways:</p>
+<ul>
+  <li><strong>Distribution surface chart</strong> — the blue violin profiles show the market-implied density at each options expiry date. The width of the violin at each SPX level is proportional to the market's probability mass at that level.</li>
+  <li><strong>Market (RN) column</strong> — the GARCH paths are reweighted so that the terminal distribution matches the market-implied density, and then the 2-year running-minimum probabilities are recomputed. This gives a market-consistent view directly comparable to your GARCH Prior and Your View columns.</li>
+</ul>
+<p><strong>Important:</strong> the market-implied distribution is <em>risk-neutral</em>, not physical. Because investors pay a fear premium for downside protection, the risk-neutral density assigns higher probability to large drawdowns than would a physical (real-world) estimate. The Market (RN) column will therefore generally show higher crash probabilities than the GARCH Prior — this is expected and not a model error.</p>
+
+<h2>The charts</h2>
+
+<h3>YOUR VIEW VS MODEL / MARKET table</h3>
+<p>Compares three probability estimates side by side for a set of SPX drawdown levels:</p>
+<dl>
+  <dt>Your View</dt><dd>P(2yr running min ≤ level) under the EP-reweighted distribution. Reflects your bucket inputs blended with the GARCH prior at your chosen confidence.</dd>
+  <dt>GARCH Prior</dt><dd>The raw GARCH simulation probability — no view blending applied. Your baseline before any subjective adjustment.</dd>
+  <dt>Market (RN)</dt><dd>The market-implied probability from B-L reweighting of GARCH paths. Incorporates the risk premium embedded in SPX options prices. Generally higher than GARCH Prior due to the fear premium.</dd>
+</dl>
+
+<h3>Terminal Distribution at Selected DTE</h3>
+<p>Shows the probability density of SPX at a single future date (chosen from the selector). The selector uses <strong>trading days</strong> (252/yr): 63 ≈ 3 months, 126 ≈ 6 months, 252 = 1 year, 378 ≈ 18 months, 504 = 2 years. The blue curve is the GARCH prior; the white curve is Your View after EP reweighting. Distributions that agree closely mean your views are similar to the GARCH baseline at that horizon.</p>
+
+<h3>Representative Paths by Quintile</h3>
+<p>Five SPX paths, one from each quintile of 2-year drawdown severity. Quintile 1 (red) is the worst crash path; Quintile 5 (green) is the best bull path. Line weight reflects EP probability mass — thicker lines carry more weight under your view. After EP reweighting, the crash quintiles become thicker if you entered bearish views.</p>
+
+<h3>Distribution Surface</h3>
+<p>Shows the full SPX probability distribution across all future time horizons, with three view options:</p>
+<dl>
+  <dt>Market (B-L)</dt><dd>Blue violin profiles: the market-implied density at each options expiry date, derived from live CBOE prices. The Mkt P10/P50/P90 lines connect the 10th, 50th, and 90th percentiles of those densities across expiries. This is always the base layer.</dd>
+  <dt>My View</dt><dd>Overlays three lines (EP P10/P50/P90) from the EP-reweighted GARCH paths on top of the market violins. Lets you see how your crash view compares to what the market is pricing in.</dd>
+  <dt>GARCH Prior</dt><dd>Overlays GARCH P10/P50/P90 (without EP adjustment) on top of the market violins. Shows the raw model baseline.</dd>
+</dl>
+<p>The x-axis is months from today (0–24). The dotted red line is the current SPX spot price.</p>
+
+</div><!-- end #helpModel -->
 
     </div>
   </div>
@@ -196,7 +281,7 @@
 
       <label class="ctrl">
         <span class="ctrl-label">Horizon (months)
-          <span class="help-tip" title="Intended hold period. Used to compute total budget (annual budget × horizon/12) and annualized cost %. Does not change the DTE filter — use the DTE filter controls for that.">?</span>
+          <span class="help-tip" title="Reference window for P(crash) in the survival model — a 6-month put gets a lower crash probability than an 18-month put scaled to this horizon. Also sets the total budget (annual budget × horizon/12) used for the affordability check. Does not affect the DTE filter or the annualized cost % column (both use the option's actual DTE).">?</span>
         </span>
         <input id="horizon" type="number" value="18" min="1" max="60" step="1">
         <span class="ctrl-hint">set-and-forget period</span>
@@ -220,11 +305,13 @@
 
       <label class="ctrl">
         <span class="ctrl-label">Scenario model
-          <span class="help-tip" title="How crash probability is scaled to each option's DTE.
+          <span class="help-tip" title="How crash probability is assigned to each option's DTE.
 
-survival (default): P(crash in d days) = 1 − (1−p_crash)^(d/H). A 6-month put gets a lower crash probability than an 18-month put, consistent with your belief being stated over the full horizon. Makes cross-expiry EPR comparison meaningful.
+garch_ep (default): probabilities come from the GARCH/EP simulation on the Model Builder tab. P(crash) and Horizon inputs are ignored. Most rigorous option.
 
-flat (original): same P(crash) applied to every option regardless of DTE. Useful as a reference or when you want to state a DTE-specific probability directly.">?</span>
+survival: P(crash in d days) = 1 − (1−p_crash)^(d/H), where d = calendar-day DTE of the option and H = Horizon in calendar days. A 6-month put gets a lower crash probability than an 18-month put. Makes cross-expiry EPR comparison meaningful.
+
+flat: same P(crash) applied to every option regardless of DTE. Useful as a quick reference.">?</span>
         </span>
         <select id="modelSelect">
           <option value="survival">survival (DTE-scaled)</option>
@@ -250,7 +337,7 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
 
       <label class="ctrl">
         <span class="ctrl-label">Index beta
-          <span class="help-tip" title="How much the selected index falls per 1.0 SPX fall in a crash scenario. This is crash beta, not market beta — it can differ significantly by regime. QQQ: ~1.3 (tech-driven crashes like 2022 are worse; financial crashes like 2008 are milder). For SPX/SPY, 1.0 is exact. Adjust to reflect your specific crash worry.">?</span>
+          <span class="help-tip" title="How much the selected index falls per 1.0 SPX fall in a crash scenario. This is crash beta, not market beta — it can differ significantly by regime. NDX: ~1.3 (tech-driven crashes like 2022 are worse for Nasdaq; financial crashes like 2008 are milder). RUT: ~1.1–1.2 (small caps typically amplify SPX crashes). For SPX, 1.0 is exact. Adjust to reflect your specific crash worry.">?</span>
         </span>
         <input id="indexBeta" type="number" value="1.0" min="0.1" max="5.0" step="0.05">
         <span class="ctrl-hint">target index / SPX crash return</span>
@@ -271,12 +358,16 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
     <div class="controls-row">
 
       <label class="ctrl ctrl-narrow">
-        <span class="ctrl-label">DTE min</span>
+        <span class="ctrl-label">DTE min
+          <span class="help-tip" title="Calendar days to expiration. 180 ≈ 6 months, 365 ≈ 1 year, 730 ≈ 2 years. These are calendar days — different from the Model Builder's trading-day DTE (252/yr).">?</span>
+        </span>
         <input id="dteMin" type="number" value="0" min="0" max="999" step="30">
       </label>
 
       <label class="ctrl ctrl-narrow">
-        <span class="ctrl-label">DTE max</span>
+        <span class="ctrl-label">DTE max
+          <span class="help-tip" title="Calendar days to expiration. 180 ≈ 6 months, 365 ≈ 1 year, 730 ≈ 2 years. These are calendar days — different from the Model Builder's trading-day DTE (252/yr).">?</span>
+        </span>
         <input id="dteMax" type="number" value="9999" min="0" max="9999" step="30">
       </label>
 
@@ -425,7 +516,7 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
         </div>
         <div class="slider-row">
           <input type="range" id="mbConfidence" min="0" max="1" step="0.05" value="0.75"
-                 oninput="mbConfidenceDisplay.textContent=parseFloat(this.value).toFixed(2); mbSchedulePreview()">
+                 oninput="mbConfidenceDisplay.textContent=parseFloat(this.value).toFixed(2); mbMarkChanged()">
           <span id="mbConfidenceDisplay" class="slider-val">0.75</span>
         </div>
       </div>
@@ -442,21 +533,16 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
         </select>
       </div>
 
-      <!-- Action buttons -->
+      <!-- Preview status -->
       <div class="mb-section">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:8px">
           <span id="mbPreviewSpinner" class="spinner" style="display:none"></span>
           <span id="mbPreviewStatus" class="mb-preview-status"></span>
         </div>
-        <button id="mbCommitBtn" class="btn-commit" style="width:100%" onclick="mbCommit()">
-          <span id="mbCommitSpinner" class="spinner" style="display:none"></span>
-          Apply to options grid ▶
-        </button>
-        <div style="margin-top:5px;font-size:10px;color:var(--text-dim)">
-          Charts update automatically as you edit. This button commits the model to the options grid scorer.
+        <div style="margin-top:4px;font-size:10px;color:var(--text-dim)">
+          Charts update automatically. Switching to the Options Grid tab applies any changes.
         </div>
       </div>
-      <div id="mbCommitStatus" class="mb-commit-status" style="display:none"></div>
       <div id="mbError" class="mb-error" style="display:none"></div>
 
     </div><!-- end mb-left -->
@@ -467,11 +553,11 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
       <!-- Prior table + terminal chart side by side -->
       <div class="mb-section" style="display:flex;gap:16px;align-items:flex-start">
         <div style="flex:0 0 auto">
-          <div class="mb-section-title">GARCH Prior vs Your View</div>
+          <div class="mb-section-title">YOUR VIEW VS MODEL / MARKET</div>
           <table class="prior-table" id="priorTable">
             <thead><tr>
               <th>Drawdown</th><th>SPX Level</th>
-              <th>GARCH Prior</th><th>Your View</th>
+              <th>Your View</th><th>GARCH Prior</th>
               <th title="P(2yr running min ≤ level) under market-implied (B-L) measure. GARCH paths reweighted by B-L risk-neutral terminal density. Directly comparable to GARCH Prior and Your View columns.">Market (RN)</th>
             </tr></thead>
             <tbody id="priorBody"><tr><td colspan="5" class="prior-loading">Loading…</td></tr></tbody>
@@ -487,8 +573,8 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
 
       <!-- Decile paths chart -->
       <div class="mb-section">
-        <div class="mb-section-title">Representative Paths by Decile
-          <span class="help-tip" title="10 paths ranked by severity of 2yr drawdown. Decile 1 (red) = worst crash scenario. Decile 10 (green) = bull case. Line weight shows EP probability mass in each decile — thicker = more weight under your view.">?</span>
+        <div class="mb-section-title">Representative Paths by Quintile
+          <span class="help-tip" title="5 paths ranked by severity of 2yr drawdown. Quintile 1 (red) = worst crash scenario. Quintile 5 (green) = bull case. Line weight shows EP probability mass in each quintile — thicker = more weight under your view.">?</span>
         </div>
         <div class="chart-wrap">
           <canvas id="pathChart"></canvas>
@@ -503,7 +589,6 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
             <button class="st-btn st-active" data-mode="market">Market (B-L)</button>
             <button class="st-btn" data-mode="posterior">My View</button>
             <button class="st-btn" data-mode="prior">GARCH Prior</button>
-            <button class="st-btn" data-mode="3d">3D</button>
           </div>
         </div>
         <div id="surfaceChart"></div>
@@ -513,6 +598,6 @@ flat (original): same P(crash) applied to every option regardless of DTE. Useful
   </div><!-- end mb-layout -->
 </div><!-- end #tabContentModel -->
 
-<script src="/static/app.js?v=18"></script>
+<script src="/static/app.js?v=20"></script>
 </body>
 </html>

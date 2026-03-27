@@ -691,24 +691,6 @@ header {
 .btn-secondary:hover:not(:disabled) { background: #1c2c42; border-color: var(--accent); }
 .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.btn-commit {
-  background:    #1a6b2e;
-  border:        1px solid #2ea04c;
-  border-radius: 5px;
-  color:         #56d364;
-  font-family:   inherit;
-  font-size:     12px;
-  font-weight:   700;
-  padding:       5px 16px;
-  cursor:        pointer;
-  transition:    background 0.15s;
-  white-space:   nowrap;
-  display:       inline-flex;
-  align-items:   center;
-  gap:           6px;
-}
-.btn-commit:hover:not(:disabled) { background: #1f8037; }
-.btn-commit:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Model builder layout ────────────────────────────────────────────────── */
 .mb-layout {
@@ -868,12 +850,6 @@ header {
   min-height: 14px;
 }
 
-.mb-commit-status {
-  margin-top: 8px;
-  font-size:  11px;
-  color:      var(--good);
-  font-weight: 600;
-}
 .mb-error {
   margin-top: 8px;
   font-size:  11px;
@@ -905,7 +881,6 @@ header {
   font-variant-numeric: tabular-nums;
 }
 .prior-table td:first-child { text-align: left; color: var(--text-muted); }
-.prior-table tr.tilt-row td { color: var(--accent); font-weight: 600; }
 .prior-table td.view-bearish { color: var(--danger); }
 .prior-table td.view-bullish { color: var(--good); }
 .prior-table td.market-higher { color: var(--warn); }
@@ -1007,10 +982,27 @@ header {
   border-radius:   8px 8px 0 0;
   z-index:         1;
 }
-.help-title {
-  font-size:   15px;
-  font-weight: 600;
-  color:       var(--text);
+.help-tab-strip {
+  display: flex;
+  gap: 4px;
+}
+.help-tab-btn {
+  background:    transparent;
+  border:        1px solid var(--border);
+  border-radius: 5px;
+  color:         var(--text-dim);
+  font-family:   inherit;
+  font-size:     12px;
+  font-weight:   600;
+  padding:       4px 14px;
+  cursor:        pointer;
+  transition:    color 0.15s, border-color 0.15s, background 0.15s;
+}
+.help-tab-btn:hover { color: var(--text); border-color: var(--accent); }
+.help-tab-btn.help-tab-active {
+  background:    rgba(58, 130, 246, 0.15);
+  border-color:  var(--accent);
+  color:         var(--accent);
 }
 .help-close {
   background:    transparent;
