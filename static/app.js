@@ -433,77 +433,32 @@ function showHelp() {
 function hideHelp() { $('helpModal').style.display = 'none'; }
 
 // ---------------------------------------------------------------------------
-// E(Pay) Breakdown modal
+// E(Pay) shared helpers
 // ---------------------------------------------------------------------------
-function closeEPayModal() { $('epayModal').style.display = 'none'; }
 
-// ---------------------------------------------------------------------------
-// E(Pay) cell hover tooltip
-// ---------------------------------------------------------------------------
-const _epayHoverCache = new Map();   // key: "expiry|strike|dte" → opt breakdown object
-let   _epayHoverKey   = null;        // key of the currently-hovered cell
-
-function hideEPayHover() {
-  $('epayHoverTooltip').style.display = 'none';
-  _epayHoverKey = null;
+// Fetch breakdown rows for one or more options at a given step size.
+// Returns the full response object {options, spot} or throws.
+async function _fetchEPayBreakdown(optionsList, stepPct) {
+  const res = await fetch('/api/epay_breakdown', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({
+      options:  optionsList,
+      step_pct: stepPct,
+    }),
+  });
+  return res.json();
 }
 
-async function showEPayHover(mouseEvent, rowData) {
-  const key = `${rowData.expiry}|${rowData.strike}|${rowData.dte}`;
-  _epayHoverKey = key;
-
-  const tip = $('epayHoverTooltip');
-  _positionEPayHover(mouseEvent, tip);
-  tip.innerHTML = `<span class="epay-hover-loading">Loading breakdown…</span>`;
-  tip.style.display = 'block';
-
-  // Serve from cache immediately if available
-  if (_epayHoverCache.has(key)) {
-    _renderEPayHover(_epayHoverCache.get(key), tip);
-    return;
-  }
-
-  try {
-    const res = await fetch('/api/epay_breakdown', {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify({ options: [{ strike: rowData.strike, dte: rowData.dte, expiry: rowData.expiry }] }),
-    });
-    const data = await res.json();
-    const opt = data.options?.[0];
-    if (opt && !opt.error) {
-      _epayHoverCache.set(key, opt);
-      // Only paint if the user is still hovering the same cell
-      if (_epayHoverKey === key) _renderEPayHover(opt, tip);
-    } else {
-      if (_epayHoverKey === key)
-        tip.innerHTML = `<span class="epay-hover-loading" style="color:#e06c75">${opt?.error ?? data.error ?? 'Error'}</span>`;
-    }
-  } catch (err) {
-    if (_epayHoverKey === key)
-      tip.innerHTML = `<span class="epay-hover-loading" style="color:#e06c75">Request failed</span>`;
-  }
-}
-
-function _positionEPayHover(e, tip) {
-  const W = 330, H = 350;          // approximate tooltip dimensions
-  const vw = window.innerWidth, vh = window.innerHeight;
-  const left = (e.clientX + 14 + W > vw) ? e.clientX - W - 6 : e.clientX + 14;
-  const top  = (e.clientY + 20 + H > vh) ? e.clientY - H + 10 : e.clientY + 20;
-  tip.style.left = left + 'px';
-  tip.style.top  = top  + 'px';
-}
-
-function _renderEPayHover(opt, tip) {
-  const rothMult = numVal('rothMult', 1.25);
+// Render a single option's rows as an epay-table and return the HTML string.
+// showRothLine: append the ×Roth footer line (used in hover tooltip).
+function _epayTableHTML(opt, rothMult, { showRothLine = false } = {}) {
   let impliedEPay = 0;
   for (const row of opt.rows) impliedEPay += (row.prob_pct / 100) * row.mean_payout;
 
-  let html = `<div class="epay-hover-title">${opt.label}</div>`;
-  html += `<table class="epay-table">
-    <thead><tr>
-      <th>SPX Level</th><th>OTM%</th><th>Prob%</th><th>Mean Payout</th>
-    </tr></thead><tbody>`;
+  let html = `<table class="epay-table"><thead><tr>
+    <th>SPX Level</th><th>OTM%</th><th>Prob%</th><th>Mean Payout</th>
+  </tr></thead><tbody>`;
   for (const row of opt.rows) {
     const pay = row.mean_payout > 0 ? '$' + Math.round(row.mean_payout).toLocaleString() : '—';
     html += `<tr>
@@ -517,89 +472,110 @@ function _renderEPayHover(opt, tip) {
     <td colspan="2" style="text-align:left">Implied E(Pay) pre-Roth</td>
     <td></td>
     <td class="epay-num">$${Math.round(impliedEPay).toLocaleString()}</td>
-  </tr></tfoot></table>
-  <div style="font-size:10px;color:var(--text-muted);padding:5px 12px 6px">
-    ×${rothMult.toFixed(2)} Roth → $${Math.round(impliedEPay * rothMult).toLocaleString()} ≈ grid E[Pay]
-  </div>`;
-  tip.innerHTML = html;
+  </tr></tfoot></table>`;
+  if (showRothLine) {
+    html += `<div class="epay-roth-line">
+      ×${rothMult.toFixed(2)} Roth → $${Math.round(impliedEPay * rothMult).toLocaleString()} ≈ grid E[Pay]
+    </div>`;
+  }
+  return html;
 }
+
+// ---------------------------------------------------------------------------
+// E(Pay) Breakdown modal  (5% steps)
+// ---------------------------------------------------------------------------
+function closeEPayModal() { $('epayModal').style.display = 'none'; }
 
 async function openEPayModal() {
   const rows = state.filteredRows.slice(0, 5);
-  if (rows.length === 0) {
-    showError('No rows in the current filtered view to analyze.');
-    return;
-  }
+  if (rows.length === 0) { showError('No rows in the current filtered view to analyze.'); return; }
   const body = $('epayModalBody');
   body.innerHTML = '<p style="color:var(--text-muted);padding:8px 20px">Loading breakdown…</p>';
   $('epayModal').style.display = 'flex';
-
   try {
-    const res = await fetch('/api/epay_breakdown', {
-      method:  'POST',
-      headers: {'Content-Type': 'application/json'},
-      body:    JSON.stringify({ options: rows.map(r => ({ strike: r.strike, dte: r.dte, expiry: r.expiry })) }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      body.innerHTML = `<p style="color:#e06c75;padding:8px 20px">${data.error}</p>`;
-      return;
+    const data = await _fetchEPayBreakdown(
+      rows.map(r => ({ strike: r.strike, dte: r.dte, expiry: r.expiry })),
+      0.05,
+    );
+    if (data.error) { body.innerHTML = `<p style="color:#e06c75;padding:8px 20px">${data.error}</p>`; return; }
+    const spot     = data.spot;
+    const spotFmt  = spot ? spot.toLocaleString(undefined, {maximumFractionDigits: 0}) : '—';
+    const rothMult = numVal('rothMult', 1.25);
+    let html = `<p class="epay-meta">
+      SPX at model init: <strong>${spotFmt}</strong>&nbsp;&nbsp;·&nbsp;&nbsp;
+      Top ${data.options.length} option${data.options.length !== 1 ? 's' : ''} by EPR from current filter.
+      &nbsp;<span style="color:var(--text-muted)">Payouts per 1 contract. Implied E(Pay) is pre-Roth; multiply by ${rothMult.toFixed(2)}× to compare with the grid.</span>
+    </p>`;
+    for (const opt of data.options) {
+      html += `<div class="epay-card"><div class="epay-card-title">${opt.label}</div>`;
+      html += opt.error
+        ? `<p style="color:#e06c75;padding:8px 12px;font-size:12px">${opt.error}</p>`
+        : _epayTableHTML(opt, rothMult);
+      html += `</div>`;
     }
-    _renderEPayBreakdown(data, body);
+    body.innerHTML = html;
   } catch (e) {
     body.innerHTML = `<p style="color:#e06c75;padding:8px 20px">Request failed: ${e.message}</p>`;
   }
 }
 
-function _renderEPayBreakdown(data, container) {
-  const spot   = data.spot;
-  const spotFmt = spot ? spot.toLocaleString(undefined, {maximumFractionDigits: 0}) : '—';
-  const rothMult = numVal('rothMult', 1.25);
+// ---------------------------------------------------------------------------
+// E(Pay) cell hover tooltip  (10% steps)
+// ---------------------------------------------------------------------------
+const _epayHoverCache = new Map();   // key: "expiry|strike|dte|step" → opt object
+let   _epayHoverKey   = null;
 
-  let html = `<p class="epay-meta">
-    SPX at model init: <strong>${spotFmt}</strong>&nbsp;&nbsp;·&nbsp;&nbsp;
-    Top ${data.options.length} option${data.options.length !== 1 ? 's' : ''} by EPR from current filter.
-    &nbsp;<span style="color:var(--text-muted)">Payouts are per 1 contract (×100 multiplier). Implied E(Pay) is pre-Roth; multiply by Roth multiplier (currently ${rothMult.toFixed(2)}×) to compare with the grid value.</span>
-  </p>`;
+function hideEPayHover() {
+  $('epayHoverTooltip').style.display = 'none';
+  _epayHoverKey = null;
+}
 
-  for (const opt of data.options) {
-    html += `<div class="epay-card">`;
-    html += `<div class="epay-card-title">${opt.label}</div>`;
-    if (opt.error) {
-      html += `<p style="color:#e06c75;padding:8px 12px;font-size:12px">${opt.error}</p>`;
-    } else {
-      // Weighted sum of prob × mean_payout → implied E(Pay) pre-Roth
-      let impliedEPay = 0;
-      for (const row of opt.rows) { impliedEPay += (row.prob_pct / 100) * row.mean_payout; }
+async function showEPayHover(mouseEvent, rowData) {
+  const key = `${rowData.expiry}|${rowData.strike}|${rowData.dte}|0.10`;
+  _epayHoverKey = key;
 
-      html += `<table class="epay-table">
-        <thead><tr>
-          <th>SPX Level</th>
-          <th>OTM%</th>
-          <th>Prob%</th>
-          <th>Mean Payout</th>
-        </tr></thead>
-        <tbody>`;
-      for (const row of opt.rows) {
-        const payFmt = row.mean_payout > 0 ? '$' + Math.round(row.mean_payout).toLocaleString() : '—';
-        html += `<tr>
-          <td>${row.level_range}</td>
-          <td class="epay-num">${row.otm_lower_pct.toFixed(1)}%</td>
-          <td class="epay-num">${row.prob_pct.toFixed(2)}%</td>
-          <td class="epay-num">${payFmt}</td>
-        </tr>`;
-      }
-      html += `</tbody>
-        <tfoot><tr>
-          <td colspan="2" style="text-align:left">Implied E(Pay) (pre-Roth)</td>
-          <td></td>
-          <td class="epay-num">$${Math.round(impliedEPay).toLocaleString()}</td>
-        </tr></tfoot>
-      </table>`;
-    }
-    html += `</div>`;
+  const tip = $('epayHoverTooltip');
+  _positionEPayHover(mouseEvent, tip);
+  tip.innerHTML = `<span class="epay-hover-loading">Loading breakdown…</span>`;
+  tip.style.display = 'block';
+
+  if (_epayHoverCache.has(key)) {
+    _paintEPayHover(_epayHoverCache.get(key), tip);
+    return;
   }
-  container.innerHTML = html;
+  try {
+    const data = await _fetchEPayBreakdown(
+      [{ strike: rowData.strike, dte: rowData.dte, expiry: rowData.expiry }],
+      0.10,
+    );
+    const opt = data.options?.[0];
+    if (opt && !opt.error) {
+      _epayHoverCache.set(key, opt);
+      if (_epayHoverKey === key) _paintEPayHover(opt, tip);
+    } else {
+      if (_epayHoverKey === key)
+        tip.innerHTML = `<span class="epay-hover-loading" style="color:#e06c75">${opt?.error ?? data.error ?? 'Error'}</span>`;
+    }
+  } catch (_) {
+    if (_epayHoverKey === key)
+      tip.innerHTML = `<span class="epay-hover-loading" style="color:#e06c75">Request failed</span>`;
+  }
+}
+
+function _positionEPayHover(e, tip) {
+  const W = 330, H = 280;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const left = (e.clientX + 14 + W > vw) ? e.clientX - W - 6 : e.clientX + 14;
+  const top  = (e.clientY + 20 + H > vh) ? e.clientY - H + 10 : e.clientY + 20;
+  tip.style.left = left + 'px';
+  tip.style.top  = top  + 'px';
+}
+
+function _paintEPayHover(opt, tip) {
+  const rothMult = numVal('rothMult', 1.25);
+  tip.innerHTML =
+    `<div class="epay-hover-title">${opt.label}</div>` +
+    _epayTableHTML(opt, rothMult, { showRothLine: true });
 }
 function showHelpTab(name) {
   const isModel = name === 'model';

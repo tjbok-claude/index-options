@@ -351,8 +351,10 @@ def api_model_status():
 @app.route("/api/epay_breakdown", methods=["POST"])
 def api_epay_breakdown():
     """E(Pay) breakdown for up to 5 options — shows bucketed GARCH terminal distribution."""
-    body    = request.get_json(force=True) or {}
-    options = body.get("options", [])[:5]
+    body     = request.get_json(force=True) or {}
+    options  = body.get("options", [])[:5]
+    step_pct = float(body.get("step_pct", 0.05))
+    step_pct = max(0.01, min(0.25, step_pct))   # sanity clamp
 
     with _garch_lock:
         model = _garch_state["model"]
@@ -368,7 +370,7 @@ def api_epay_breakdown():
             dte    = int(opt["dte"])
             expiry = str(opt.get("expiry", ""))
             label  = f"{expiry}  ·  {int(strike):,}P  ·  DTE {dte}"
-            rows   = model.epay_breakdown(strike, dte)
+            rows   = model.epay_breakdown(strike, dte, step_pct=step_pct)
             results.append({"label": label, "strike": strike, "dte": dte, "rows": rows})
         except Exception as exc:
             results.append({"label": str(opt.get("strike", "?")), "error": str(exc)})
