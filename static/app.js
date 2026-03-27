@@ -275,6 +275,14 @@ function initTable() {
     movableColumns:        true,
   });
 
+  table.on('cellMouseEnter', (e, cell) => {
+    if (cell.getField() !== 'e_payoff_roth_1c') return;
+    showEPayHover(e, cell.getRow().getData());
+  });
+  table.on('cellMouseLeave', (e, cell) => {
+    if (cell.getField() === 'e_payoff_roth_1c') hideEPayHover();
+  });
+
   table.on('dataSorted', (sorters) => {
     if (!sorters.length) return;
     const s = sorters[0];
@@ -428,6 +436,93 @@ function hideHelp() { $('helpModal').style.display = 'none'; }
 // E(Pay) Breakdown modal
 // ---------------------------------------------------------------------------
 function closeEPayModal() { $('epayModal').style.display = 'none'; }
+
+// ---------------------------------------------------------------------------
+// E(Pay) cell hover tooltip
+// ---------------------------------------------------------------------------
+const _epayHoverCache = new Map();   // key: "expiry|strike|dte" → opt breakdown object
+let   _epayHoverKey   = null;        // key of the currently-hovered cell
+
+function hideEPayHover() {
+  $('epayHoverTooltip').style.display = 'none';
+  _epayHoverKey = null;
+}
+
+async function showEPayHover(mouseEvent, rowData) {
+  const key = `${rowData.expiry}|${rowData.strike}|${rowData.dte}`;
+  _epayHoverKey = key;
+
+  const tip = $('epayHoverTooltip');
+  _positionEPayHover(mouseEvent, tip);
+  tip.innerHTML = `<span class="epay-hover-loading">Loading breakdown…</span>`;
+  tip.style.display = 'block';
+
+  // Serve from cache immediately if available
+  if (_epayHoverCache.has(key)) {
+    _renderEPayHover(_epayHoverCache.get(key), tip);
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/epay_breakdown', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ options: [{ strike: rowData.strike, dte: rowData.dte, expiry: rowData.expiry }] }),
+    });
+    const data = await res.json();
+    const opt = data.options?.[0];
+    if (opt && !opt.error) {
+      _epayHoverCache.set(key, opt);
+      // Only paint if the user is still hovering the same cell
+      if (_epayHoverKey === key) _renderEPayHover(opt, tip);
+    } else {
+      if (_epayHoverKey === key)
+        tip.innerHTML = `<span class="epay-hover-loading" style="color:#e06c75">${opt?.error ?? data.error ?? 'Error'}</span>`;
+    }
+  } catch (err) {
+    if (_epayHoverKey === key)
+      tip.innerHTML = `<span class="epay-hover-loading" style="color:#e06c75">Request failed</span>`;
+  }
+}
+
+function _positionEPayHover(e, tip) {
+  const W = 330, H = 350;          // approximate tooltip dimensions
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const left = (e.clientX + 14 + W > vw) ? e.clientX - W - 6 : e.clientX + 14;
+  const top  = (e.clientY + 20 + H > vh) ? e.clientY - H + 10 : e.clientY + 20;
+  tip.style.left = left + 'px';
+  tip.style.top  = top  + 'px';
+}
+
+function _renderEPayHover(opt, tip) {
+  const rothMult = numVal('rothMult', 1.25);
+  let impliedEPay = 0;
+  for (const row of opt.rows) impliedEPay += (row.prob_pct / 100) * row.mean_payout;
+
+  let html = `<div class="epay-hover-title">${opt.label}</div>`;
+  html += `<table class="epay-table">
+    <thead><tr>
+      <th>SPX Level</th><th>OTM%</th><th>Prob%</th><th>Mean Payout</th>
+    </tr></thead><tbody>`;
+  for (const row of opt.rows) {
+    const pay = row.mean_payout > 0 ? '$' + Math.round(row.mean_payout).toLocaleString() : '—';
+    html += `<tr>
+      <td>${row.level_range}</td>
+      <td class="epay-num">${row.otm_lower_pct.toFixed(1)}%</td>
+      <td class="epay-num">${row.prob_pct.toFixed(2)}%</td>
+      <td class="epay-num">${pay}</td>
+    </tr>`;
+  }
+  html += `</tbody><tfoot><tr>
+    <td colspan="2" style="text-align:left">Implied E(Pay) pre-Roth</td>
+    <td></td>
+    <td class="epay-num">$${Math.round(impliedEPay).toLocaleString()}</td>
+  </tr></tfoot></table>
+  <div style="font-size:10px;color:var(--text-muted);padding:5px 12px 6px">
+    ×${rothMult.toFixed(2)} Roth → $${Math.round(impliedEPay * rothMult).toLocaleString()} ≈ grid E[Pay]
+  </div>`;
+  tip.innerHTML = html;
+}
 
 async function openEPayModal() {
   const rows = state.filteredRows.slice(0, 5);
@@ -860,6 +955,7 @@ async function mbAutoCommit() {
       body: JSON.stringify({ buckets, confidence }),
     });
     if (!resp.ok) { showGridOverlay(false); return; }
+    _epayHoverCache.clear();   // stale breakdowns after model change
     const sel = $('modelSelect');
     if (sel) { sel.value = 'garch_ep'; updateGarchDisabledState(); }
     fetchOptions(false);

@@ -949,6 +949,33 @@ header {
 }
 .btn-help:hover { border-color: var(--accent); color: var(--text); }
 
+/* ── E(Pay) hover tooltip ────────────────────────────────────────────────── */
+.epay-hover-tooltip {
+  position:       fixed;
+  z-index:        2000;
+  background:     var(--bg-panel);
+  border:         1px solid var(--border);
+  border-radius:  6px;
+  box-shadow:     0 6px 24px rgba(0,0,0,0.55);
+  width:          330px;
+  pointer-events: none;
+  overflow:       hidden;
+}
+.epay-hover-title {
+  background:  var(--bg-panel-alt);
+  padding:     7px 12px;
+  font-weight: 600;
+  font-size:   11px;
+  color:       var(--accent);
+  border-bottom: 1px solid var(--border);
+}
+.epay-hover-loading {
+  display:     block;
+  padding:     12px;
+  font-size:   11px;
+  color:       var(--text-muted);
+}
+
 /* ── E(Pay) Breakdown modal ──────────────────────────────────────────────── */
 .epay-modal-content { max-width: 820px; }
 
