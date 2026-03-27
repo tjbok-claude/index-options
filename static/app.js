@@ -228,7 +228,7 @@ const COLUMNS = [
   },
   {
     title: 'E[Pay]', field: 'e_payoff_roth_1c', sorter: 'number', width: 82, minWidth: 76, formatter: fmtDollar0,
-    tooltip: 'Expected payoff = Σ(probability_i × payoff_i) × Roth multiplier. Weighted across all 6 scenarios (bull, flat, bear, crash mild/deep/severe). The 1.25× Roth multiplier reflects that gains in a Roth IRA are tax-free (vs taxable account).',
+    tooltip: 'Expected payoff per contract × Roth multiplier.\n\nCalculated by integrating E[max(Strike − SPX_expiry, 0) × 100] across all 100,000 GARCH-simulated price paths, weighted by the entropy-pooled posterior probabilities from your Model Builder view.\n\nThe 1.25× Roth multiplier reflects tax-free gains in a Roth IRA vs a taxable account.\n\nClick "Check E(Pay) Calc" in the Filters panel to see a full breakdown by SPX level range for the top options.',
   },
   {
     title: 'E[Net]', field: 'e_net_1c', sorter: 'number', width: 82, minWidth: 76, formatter: fmtDollar0,
@@ -240,7 +240,7 @@ const COLUMNS = [
   },
   {
     title: 'CrEff', field: 'crash_efficiency', sorter: 'number', width: 72, minWidth: 66, formatter: fmtCrashEff,
-    tooltip: 'Crash Efficiency = crash-scenario expected payoff (Roth-adjusted) / cost. Same as EPR but counting only the three crash scenarios, ignoring bull/flat/bear. Shows how efficiently this put buys tail protection specifically.',
+    tooltip: 'Crash Efficiency = crash-path expected payoff (Roth-adjusted) / cost. Same as EPR but counting only GARCH paths where SPX falls ≥25% — ignoring bull, flat, and mild-bear paths. Shows how efficiently this put buys tail protection specifically.',
   },
   {
     title: 'Ann%', field: 'annual_cost_pct', sorter: 'number', width: 68, minWidth: 62, formatter: fmtPct1,

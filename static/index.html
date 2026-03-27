@@ -97,7 +97,7 @@
 <h3>Expected value metrics</h3>
 <dl>
   <dt>E[Pay]</dt>
-  <dd>Probability-weighted expected payoff across all scenarios, Roth-adjusted: Σ(P<sub>i</sub> × payoff<sub>i</sub>) × Roth multiplier. This is what the put is "worth" to you given your probability model.</dd>
+  <dd>Probability-weighted expected payoff per contract, Roth-adjusted. Computed by integrating <em>E[max(Strike − SPX<sub>expiry</sub>, 0) × 100]</em> across all 100,000 GARCH-simulated paths, weighted by the entropy-pooled posterior from your Model Builder view, then multiplied by your Roth multiplier. Use <strong>Check E(Pay) Calc</strong> in the Filters panel to see a full breakdown by SPX level range.</dd>
 
   <dt>E[Net]</dt>
   <dd>E[Pay] minus Cost 1c. Positive = positive expected value at your assumed probabilities. Most market puts have negative E[Net] at market-implied crash probabilities; a positive value means you believe crashes are underpriced.</dd>
