@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260323h');
+console.log('app.js v20260327a');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -423,6 +423,89 @@ function showHelp() {
   $('helpModal').style.display = 'flex';
 }
 function hideHelp() { $('helpModal').style.display = 'none'; }
+
+// ---------------------------------------------------------------------------
+// E(Pay) Breakdown modal
+// ---------------------------------------------------------------------------
+function closeEPayModal() { $('epayModal').style.display = 'none'; }
+
+async function openEPayModal() {
+  const rows = state.filteredRows.slice(0, 5);
+  if (rows.length === 0) {
+    showError('No rows in the current filtered view to analyze.');
+    return;
+  }
+  const body = $('epayModalBody');
+  body.innerHTML = '<p style="color:var(--text-muted);padding:8px 20px">Loading breakdown…</p>';
+  $('epayModal').style.display = 'flex';
+
+  try {
+    const res = await fetch('/api/epay_breakdown', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ options: rows.map(r => ({ strike: r.strike, dte: r.dte, expiry: r.expiry })) }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      body.innerHTML = `<p style="color:#e06c75;padding:8px 20px">${data.error}</p>`;
+      return;
+    }
+    _renderEPayBreakdown(data, body);
+  } catch (e) {
+    body.innerHTML = `<p style="color:#e06c75;padding:8px 20px">Request failed: ${e.message}</p>`;
+  }
+}
+
+function _renderEPayBreakdown(data, container) {
+  const spot   = data.spot;
+  const spotFmt = spot ? spot.toLocaleString(undefined, {maximumFractionDigits: 0}) : '—';
+  const rothMult = numVal('rothMult', 1.25);
+
+  let html = `<p class="epay-meta">
+    SPX at model init: <strong>${spotFmt}</strong>&nbsp;&nbsp;·&nbsp;&nbsp;
+    Top ${data.options.length} option${data.options.length !== 1 ? 's' : ''} by EPR from current filter.
+    &nbsp;<span style="color:var(--text-muted)">Payouts are per 1 contract (×100 multiplier). Implied E(Pay) is pre-Roth; multiply by Roth multiplier (currently ${rothMult.toFixed(2)}×) to compare with the grid value.</span>
+  </p>`;
+
+  for (const opt of data.options) {
+    html += `<div class="epay-card">`;
+    html += `<div class="epay-card-title">${opt.label}</div>`;
+    if (opt.error) {
+      html += `<p style="color:#e06c75;padding:8px 12px;font-size:12px">${opt.error}</p>`;
+    } else {
+      // Weighted sum of prob × mean_payout → implied E(Pay) pre-Roth
+      let impliedEPay = 0;
+      for (const row of opt.rows) { impliedEPay += (row.prob_pct / 100) * row.mean_payout; }
+
+      html += `<table class="epay-table">
+        <thead><tr>
+          <th>SPX Level</th>
+          <th>OTM%</th>
+          <th>Prob%</th>
+          <th>Mean Payout</th>
+        </tr></thead>
+        <tbody>`;
+      for (const row of opt.rows) {
+        const payFmt = row.mean_payout > 0 ? '$' + Math.round(row.mean_payout).toLocaleString() : '—';
+        html += `<tr>
+          <td>${row.level_range}</td>
+          <td class="epay-num">${row.otm_lower_pct.toFixed(1)}%</td>
+          <td class="epay-num">${row.prob_pct.toFixed(2)}%</td>
+          <td class="epay-num">${payFmt}</td>
+        </tr>`;
+      }
+      html += `</tbody>
+        <tfoot><tr>
+          <td colspan="2" style="text-align:left">Implied E(Pay) (pre-Roth)</td>
+          <td></td>
+          <td class="epay-num">$${Math.round(impliedEPay).toLocaleString()}</td>
+        </tr></tfoot>
+      </table>`;
+    }
+    html += `</div>`;
+  }
+  container.innerHTML = html;
+}
 function showHelpTab(name) {
   const isModel = name === 'model';
   $('helpGrid').style.display  = isModel ? 'none' : '';

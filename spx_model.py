@@ -923,6 +923,144 @@ class GJREntropyModel:
             "post_q":     post_q_rows,
         }
 
+    def epay_breakdown(
+        self,
+        strike: float,
+        dte: int,
+        step_pct: float = 0.05,
+        max_rows: int = 15,
+    ) -> list[dict]:
+        """
+        Compute E(Pay) breakdown for a put option with given strike and DTE.
+
+        Buckets the GARCH terminal distribution into:
+          - [strike, ∞): option expires worthless, payout = $0
+          - Then step_pct × spot increments going down from strike
+
+        Args:
+            strike:   put strike price in SPX points
+            dte:      calendar days to expiry (same unit as grid DTE column)
+            step_pct: bucket width as fraction of current spot (default 5%)
+            max_rows: maximum number of below-strike rows to return
+
+        Returns list of dicts:
+            level_range  : str   — e.g. "6,250+" or "6,105–6,250"
+            otm_lower_pct: float — lower bound of range relative to spot (%)
+            prob_pct     : float — probability of ending in this range (%)
+            mean_payout  : float — probability-weighted mean payout ($)
+        """
+        paths   = self._cache.paths             # (n_paths, n_weeks)
+        n_weeks = paths.shape[1]
+        week_idx = min((dte - 1) // 5, n_weeks - 1)
+        terminal = paths[:, week_idx]           # (n_paths,)
+        weights  = self._path_weights           # (n_paths,), sums to 1.0
+        spot     = self._cache.current_price
+        step     = spot * step_pct
+
+        rows: list[dict] = []
+
+        # ── Row 1: terminal ≥ strike (option expires worthless) ──────────
+        mask_atm = terminal >= strike
+        prob_atm = float(np.sum(weights[mask_atm]))
+        rows.append({
+            "level_range":   f"{int(round(strike)):,}+",
+            "otm_lower_pct": round((strike / spot - 1.0) * 100, 1),
+            "prob_pct":      round(prob_atm * 100, 2),
+            "mean_payout":   0.0,
+        })
+
+        # ── Rows 2+: step_pct×spot increments below strike ───────────────
+        hi = strike
+        for _ in range(max_rows):
+            lo   = hi - step
+            mask = (terminal >= lo) & (terminal < hi)
+            prob = float(np.sum(weights[mask]))
+            if prob < 1e-5:
+                break
+            t_in    = terminal[mask]
+            w_in    = weights[mask]
+            payouts = np.maximum(strike - t_in, 0.0) * 100.0
+            mean_pay = float(np.dot(w_in, payouts) / prob)
+            rows.append({
+                "level_range":   f"{int(round(lo)):,}–{int(round(hi)):,}",
+                "otm_lower_pct": round((lo / spot - 1.0) * 100, 1),
+                "prob_pct":      round(prob * 100, 2),
+                "mean_payout":   round(mean_pay, 0),
+            })
+            hi = lo
+
+        # ── Tail catch-all (everything below the last explicit bucket) ────
+        mask_tail = terminal < hi
+        prob_tail = float(np.sum(weights[mask_tail]))
+        if prob_tail > 1e-5:
+            t_in    = terminal[mask_tail]
+            w_in    = weights[mask_tail]
+            payouts = np.maximum(strike - t_in, 0.0) * 100.0
+            mean_pay = float(np.dot(w_in, payouts) / prob_tail)
+            rows.append({
+                "level_range":   f"<{int(round(hi)):,}",
+                "otm_lower_pct": round((hi / spot - 1.0) * 100, 1),
+                "prob_pct":      round(prob_tail * 100, 2),
+                "mean_payout":   round(mean_pay, 0),
+            })
+
+        return rows
+
+    def expected_payoffs(
+        self,
+        strikes: np.ndarray,
+        dte: int,
+        index_spot: float | None = None,
+        index_beta: float = 1.0,
+        crash_threshold_ret: float = -0.25,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Path-integrated E[max(K - S_T, 0) × 100] for each strike at a given DTE.
+
+        Uses the full 100K-path posterior distribution rather than discrete
+        scenario point estimates, eliminating the systematic underestimation
+        that arises from assigning each crash bucket's probability mass to the
+        least-severe boundary of that bucket.
+
+        Returns (total_epay, crash_epay), both shape (n_strikes,):
+          total_epay  — full probability-weighted expected payout
+          crash_epay  — contribution from paths where SPX drops past
+                        crash_threshold_ret (used for crash_efficiency)
+
+        Args:
+            strikes:             put strikes in index points, shape (n_strikes,)
+            dte:                 calendar days to expiry (same unit as grid DTE)
+            index_spot:          current price of the target index; defaults to
+                                 self._cache.current_price (i.e. SPX = target index)
+            index_beta:          amplifier on SPX return → index return; 1.0 for SPX
+            crash_threshold_ret: SPX return defining "crash" for crash_epay split;
+                                 should match least-severe entry in Params.crash_splits
+        """
+        week_idx     = min((dte - 1) // 5, self._cache.paths.shape[1] - 1)
+        spx_terminal = self._cache.paths[:, week_idx]            # (n_paths,)
+        w            = self._path_weights                         # (n_paths,)
+
+        if index_spot is None:
+            index_spot = self._cache.current_price
+
+        # Convert SPX path levels to index-adjusted terminal levels.
+        # r_spx is the implied return relative to the model's initialisation price.
+        r_spx          = spx_terminal / self._cache.current_price - 1.0  # (n_paths,)
+        index_terminal = index_spot * (1.0 + r_spx * index_beta)          # (n_paths,)
+
+        # Crash mask: paths where SPX falls past least-severe crash threshold
+        crash_mask = spx_terminal < self._cache.current_price * (1.0 + crash_threshold_ret)
+        w_crash    = w * crash_mask
+
+        total_e = np.empty(len(strikes))
+        crash_e = np.empty(len(strikes))
+        for i, k in enumerate(strikes):
+            payoffs    = np.maximum(k - index_terminal, 0.0) * 100.0
+            total_e[i] = np.dot(w,       payoffs)
+            crash_e[i] = np.dot(w_crash, payoffs)
+
+        return total_e, crash_e
+
     def terminal_distribution(
         self, target_day: int, n_bins: int = 80
     ) -> dict:

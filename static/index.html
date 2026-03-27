@@ -8,7 +8,7 @@
   <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.27.0/plotly.min.js"></script>
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
 
@@ -406,6 +406,12 @@ flat: same P(crash) applied to every option regardless of DTE. Useful as a quick
         </select>
       </label>
 
+      <div class="ctrl-divider"></div>
+
+      <div class="ctrl" style="justify-content:flex-end;align-self:flex-end;padding-bottom:2px">
+        <button id="epayBtn" class="btn-help" onclick="openEPayModal()" title="Show E(Pay) breakdown for top 5 options in current filtered view">Check E(Pay) Calc</button>
+      </div>
+
     </div>
   </div>
 </section>
@@ -598,6 +604,17 @@ flat: same P(crash) applied to every option regardless of DTE. Useful as a quick
   </div><!-- end mb-layout -->
 </div><!-- end #tabContentModel -->
 
-<script src="/static/app.js?v=20"></script>
+<!-- ── E(Pay) Breakdown modal ──────────────────────────────── -->
+<div id="epayModal" class="help-modal" style="display:none" onclick="if(event.target===this)closeEPayModal()">
+  <div class="help-content epay-modal-content">
+    <div class="help-header">
+      <span style="font-weight:600;font-size:14px;color:var(--text-head)">E(Pay) Breakdown</span>
+      <button class="help-close" onclick="closeEPayModal()">✕</button>
+    </div>
+    <div class="help-body" id="epayModalBody" style="padding:16px 0 8px"></div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=21"></script>
 </body>
 </html>

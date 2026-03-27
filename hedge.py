@@ -206,21 +206,40 @@ def score_puts(
     # ------------------------------------------------------------------
     # Step 2: compute probability-weighted expected payoffs.
     #
-    # Call the model once per unique DTE so each row gets the correct
-    # time-scaled probabilities for its expiry.
+    # Fast path (GJREntropyModel): integrate directly over all 100K paths
+    # using per-path posterior weights.  This avoids the systematic
+    # underestimation that occurs when each crash bucket's probability
+    # mass is assigned the payout at the bucket's least-severe boundary.
+    #
+    # Fallback (flat / survival): call the model once per unique DTE and
+    # weight the pre-computed scenario payoffs by scenario probabilities.
     # ------------------------------------------------------------------
     e_payoff_roth  = pd.Series(0.0, index=df.index)
     crash_e_payoff = pd.Series(0.0, index=df.index)
 
-    for dte_val in df["dte"].unique():
-        mask = df["dte"] == dte_val
-        scenarios = model(p, int(dte_val))
-        for s in scenarios:
-            payoff = df.loc[mask, f"payoff_{s.name}_1c"]
-            weighted = s.probability * payoff
-            e_payoff_roth[mask]  += weighted
-            if s.is_crash:
-                crash_e_payoff[mask] += weighted
+    if hasattr(model, "expected_payoffs"):
+        crash_threshold_ret = max(spx_ret for _, spx_ret in p.crash_splits)
+        for dte_val in df["dte"].unique():
+            mask    = df["dte"] == dte_val
+            strikes = df.loc[mask, "strike"].to_numpy(dtype=float)
+            total_e, crash_e = model.expected_payoffs(
+                strikes, int(dte_val),
+                index_spot=spx_spot,
+                index_beta=p.index_beta,
+                crash_threshold_ret=crash_threshold_ret,
+            )
+            e_payoff_roth[mask]  = total_e
+            crash_e_payoff[mask] = crash_e
+    else:
+        for dte_val in df["dte"].unique():
+            mask = df["dte"] == dte_val
+            scenarios = model(p, int(dte_val))
+            for s in scenarios:
+                payoff   = df.loc[mask, f"payoff_{s.name}_1c"]
+                weighted = s.probability * payoff
+                e_payoff_roth[mask]  += weighted
+                if s.is_crash:
+                    crash_e_payoff[mask] += weighted
 
     e_payoff_roth *= p.roth_multiplier
     df["e_payoff_roth_1c"] = e_payoff_roth.round(2)

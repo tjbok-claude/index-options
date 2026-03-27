@@ -348,6 +348,34 @@ def api_model_status():
     })
 
 
+@app.route("/api/epay_breakdown", methods=["POST"])
+def api_epay_breakdown():
+    """E(Pay) breakdown for up to 5 options — shows bucketed GARCH terminal distribution."""
+    body    = request.get_json(force=True) or {}
+    options = body.get("options", [])[:5]
+
+    with _garch_lock:
+        model = _garch_state["model"]
+
+    if model is None:
+        return jsonify({"error": "GARCH model not ready — please wait for paths to finish loading."}), 503
+
+    spot    = model._current_price
+    results = []
+    for opt in options:
+        try:
+            strike = float(opt["strike"])
+            dte    = int(opt["dte"])
+            expiry = str(opt.get("expiry", ""))
+            label  = f"{expiry}  ·  {int(strike):,}P  ·  DTE {dte}"
+            rows   = model.epay_breakdown(strike, dte)
+            results.append({"label": label, "strike": strike, "dte": dte, "rows": rows})
+        except Exception as exc:
+            results.append({"label": str(opt.get("strike", "?")), "error": str(exc)})
+
+    return jsonify({"options": results, "spot": spot})
+
+
 @app.route("/api/model/reinit", methods=["POST"])
 def api_model_reinit():
     """Re-run GARCH simulation with optional drift override. Uses current CBOE price."""
