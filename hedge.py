@@ -251,6 +251,15 @@ def score_puts(
         (crash_e_payoff * p.roth_multiplier) / df["cost_1c"]
     ).replace([np.inf, -np.inf], np.nan).round(4)
 
+    # Break-even crash probability: the minimum P(crash) at which this put has
+    # positive expected value from crash paths alone.
+    # At break-even: BEP × E[payoff|crash] × roth_mult = cost
+    # → BEP = cost / (E[payoff|crash] × roth_mult) = p_crash / crash_efficiency
+    # Lower BEP → put pays off under crash scenarios even if crash is unlikely.
+    df["break_even_p"] = (
+        p.p_crash / df["crash_efficiency"]
+    ).replace([np.inf, -np.inf], np.nan).clip(upper=1.0).round(4)
+
     # Sizing
     df["cost_Nc"] = (df["cost_1c"] * n).round(2)
     df["affordable"] = df["cost_Nc"] <= p.total_budget

@@ -7,7 +7,7 @@
  *   Column click  → Tabulator native sort, no server call
  */
 'use strict';
-console.log('app.js v20260327b');
+console.log('app.js v20260331d');
 
 // ---------------------------------------------------------------------------
 // Global error handler — catches uncaught JS errors and shows them visibly
@@ -137,6 +137,17 @@ function fmtCrashEff(cell) {
   return v.toFixed(3);
 }
 
+function fmtBEP(cell) {
+  const v = cell.getValue();
+  if (v == null) return na();
+  const el = cell.getElement();
+  el.classList.remove('cell-epr-high', 'cell-epr-mid', 'cell-epr-low');
+  if      (v <= 0.20) el.classList.add('cell-epr-high');  // robust: breaks even even at low conviction
+  else if (v <= 0.35) el.classList.add('cell-epr-mid');
+  else                el.classList.add('cell-epr-low');   // expensive: needs strong crash conviction
+  return (v * 100).toFixed(1) + '%';
+}
+
 function fmtTheo(cell) {
   const v = cell.getValue();
   if (v == null) return na();
@@ -236,11 +247,15 @@ const COLUMNS = [
   },
   {
     title: 'EPR', field: 'EPR', sorter: 'number', width: 66, minWidth: 60, formatter: fmtEPR,
-    tooltip: 'Expected Payoff Ratio = E[Pay] / Cost. PRIMARY SORT KEY.\n\n>2.0 (green): excellent value at your crash assumptions\n1.0–2.0 (yellow): break-even to modestly positive\n<1.0: expensive but may still be worth buying for tail protection\n\nEPR > 1.0 means the put is "cheap" relative to your subjective crash probability. Lower P(crash) → lower EPR everywhere.',
+    tooltip: 'Expected Payoff Ratio = E[Pay] / Cost. PRIMARY SORT KEY.\n\n>2.0 (green): excellent value at your crash assumptions\n1.0–2.0 (yellow): break-even to modestly positive\n<1.0: expensive but may still be worth buying for tail protection\n\nEPR > 1.0 means the put is "cheap" relative to your subjective crash probability. Lower P(crash) → lower EPR everywhere.\n\nNote: EPR is optimal when you trust your GARCH/entropy-pooled probability model. If you\'re uncertain about the crash probability itself, prefer the model-free metrics CrEff and BEP.',
   },
   {
     title: 'CrEff', field: 'crash_efficiency', sorter: 'number', width: 72, minWidth: 66, formatter: fmtCrashEff,
-    tooltip: 'Crash Efficiency = crash-path expected payoff (Roth-adjusted) / cost. Same as EPR but counting only GARCH paths where SPX falls ≥25% — ignoring bull, flat, and mild-bear paths. Shows how efficiently this put buys tail protection specifically.',
+    tooltip: 'Crash Efficiency = crash-path expected payoff (Roth-adjusted) / cost. Counts only GARCH paths where SPX falls ≥25%, ignoring bull/flat/bear paths.\n\nBecause CrEff conditions on crash scenarios only, its ranking is independent of your assumed P(crash) — useful when you\'re uncertain about the crash probability itself.\n\nEPR is the primary metric when you trust your probability model; CrEff is a useful cross-check when you\'re uncertain about P(crash).',
+  },
+  {
+    title: 'BEP', field: 'break_even_p', sorter: 'number', width: 68, minWidth: 62, formatter: fmtBEP,
+    tooltip: 'Break-Even P(crash): the minimum crash probability at which this put has positive expected value from crash paths alone.\n\nFormula: BEP = P(crash) / CrEff\n\nAt break-even: BEP × E[payoff|crash] × Roth-mult = cost\n\nGreen (≤20%): robust — breaks even even if you only think there\'s a 1-in-5 chance of a crash\nYellow (20–35%): requires moderate conviction\nRed (>35%): expensive — needs strong crash conviction to justify',
   },
   {
     title: 'Ann%', field: 'annual_cost_pct', sorter: 'number', width: 68, minWidth: 62, formatter: fmtPct1,
@@ -948,10 +963,29 @@ const QUINTILE_COLORS = [
 
 function mbRenderPreview(data, buckets) {
   mbRenderPriorTable(data.prior_stats, buckets, data.market_priors || []);
+  mbRenderTerminalTable(data.terminal_stats || []);
   mbRenderPathChart(data.quintile_paths, data.quintile_groups, data.quintile_stats, data.current_price);
   mbRenderTermChart(data.terminal);
   mbRenderQuintileStats(data.quintile_stats);
   if (data.surface && data.surface.levels) mbRenderSurfaceChart(data.surface, currentSurfaceMode, data.current_price);
+}
+
+// Shared helper: render one row of a 5-column stats table.
+// view, prior, marketRn are 0-1 fractions or null; drawdown is 0-1; level is integer.
+function _mbStatsRow(drawdown, level, view, prior, marketRn) {
+  const fmt = v => v !== null && v !== undefined ? (v * 100).toFixed(0) + '%' : '—';
+  const moveLabel = `&lt;−${(drawdown * 100).toFixed(0)}%`;
+  const viewClass  = (view !== null && prior !== null)
+    ? (view > prior + 0.02 ? 'view-bearish' : view < prior - 0.02 ? 'view-bullish' : '') : '';
+  const mktClass   = (marketRn !== null && marketRn !== undefined && prior !== null)
+    ? (marketRn > prior + 0.05 ? 'market-higher' : marketRn < prior - 0.05 ? 'market-lower' : '') : '';
+  return `<tr>
+    <td>${moveLabel}</td>
+    <td>${level.toLocaleString()}</td>
+    <td class="${viewClass}">${fmt(view)}</td>
+    <td>${fmt(prior)}</td>
+    <td class="${mktClass}">${fmt(marketRn)}</td>
+  </tr>`;
 }
 
 function mbRenderPriorTable(stats, buckets, marketPriors) {
@@ -973,25 +1007,23 @@ function mbRenderPriorTable(stats, buckets, marketPriors) {
   const tbody = $('priorBody');
   tbody.innerHTML = '';
   stats.forEach((s, i) => {
-    const vp = viewCDF(s.level);
-    const viewStr = vp !== null ? (vp * 100).toFixed(0) + '%' : '—';
-    const diff = vp !== null ? vp - s.prob : null;
-    const viewClass = diff === null ? '' : diff > 0.02 ? 'view-bearish' : diff < -0.02 ? 'view-bullish' : '';
+    const view     = viewCDF(s.level);
+    const marketRn = (marketPriors && i < marketPriors.length) ? marketPriors[i] : null;
+    tbody.insertAdjacentHTML('beforeend', _mbStatsRow(s.drawdown, s.level, view, s.prob, marketRn));
+  });
+}
 
-    const market = (marketPriors && i < marketPriors.length) ? marketPriors[i] : null;
-    const marketStr = market !== null && market !== undefined ? (market * 100).toFixed(0) + '%' : '—';
-    const mktClass = market !== null && market !== undefined
-      ? (market > s.prob + 0.05 ? 'market-higher' : market < s.prob - 0.05 ? 'market-lower' : '')
-      : '';
-
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>>−${(s.drawdown * 100).toFixed(0)}%</td>
-      <td>${s.level.toLocaleString()}</td>
-      <td class="${viewClass}">${viewStr}</td>
-      <td>${(s.prob * 100).toFixed(0)}%</td>
-      <td class="${mktClass}">${marketStr}</td>`;
-    tbody.appendChild(tr);
+function mbRenderTerminalTable(stats) {
+  const tbody = $('terminalBody');
+  if (!tbody) return;
+  if (!stats || !stats.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="prior-loading">—</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  stats.forEach(s => {
+    tbody.insertAdjacentHTML('beforeend',
+      _mbStatsRow(s.drawdown, s.level, s.posterior, s.prior, s.market_rn));
   });
 }
 

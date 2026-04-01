@@ -184,7 +184,7 @@ RESPONSE_COLS = [
     "open_interest", "volume",
     "cost_1c", "cost_Nc",
     "payoff_crash_25pct_1c", "payoff_crash_40pct_1c", "payoff_crash_55pct_1c",
-    "e_payoff_roth_1c", "e_net_1c", "EPR", "crash_efficiency",
+    "e_payoff_roth_1c", "e_net_1c", "EPR", "crash_efficiency", "break_even_p",
     "annual_cost_pct", "theo_vs_mid_pct",
 ]
 
@@ -430,56 +430,57 @@ def _bl_target_cal_dte(query_dte_trading: int) -> int:
     return int(round(query_dte_trading * 365.0 / 252.0))
 
 
-def _compute_bl_market_running_min(
-    symbol: str,
-    cache,
-    query_dte: int,
-    drawdown_levels: list,
-    r: float = 0.045,
-    n_bins: int = 200,
-) -> list:
+def _bl_log_strike_smooth(all_ks: np.ndarray, all_ds: np.ndarray) -> np.ndarray:
     """
-    Reweight GARCH paths by the B-L risk-neutral terminal density, then compute
-    P(running min over 2yr ≤ level) under the reweighted measure.
+    Smooth a B-L density in log-strike space.
 
-    This makes the Market column directly comparable to GARCH Prior and Your View,
-    which also show running-minimum probabilities.
+    Interpolates onto a uniform log-strike grid, applies a Gaussian kernel,
+    then maps back to the original strike points.  This ensures the smoothing
+    bandwidth is proportionally uniform across the strike range — critical for
+    the deep OTM tail where listed strikes are sparse in index space.
 
-    query_dte is in trading days (same scale as the model paths).
-    Returns list of float, one per drawdown level. Returns [] on any error.
+    Returns smoothed densities (same shape as all_ds, non-negative).
     """
-    from spx_model import _compute_path_weights
+    from scipy.interpolate import interp1d
+    from scipy.ndimage import gaussian_filter1d
+
+    if len(all_ks) < 3:
+        return np.maximum(all_ds, 0.0)
+
+    log_ks    = np.log(all_ks)
+    n_unif    = max(len(all_ks) * 4, 200)
+    unif_lks  = np.linspace(log_ks[0], log_ks[-1], n_unif)
+    to_unif   = interp1d(log_ks, all_ds, kind='linear', bounds_error=False, fill_value=0.0)
+    unif_ds   = gaussian_filter1d(np.maximum(to_unif(unif_lks), 0.0), sigma=4.0)
+    from_unif = interp1d(unif_lks, unif_ds, kind='linear', bounds_error=False, fill_value=0.0)
+    return np.maximum(from_unif(log_ks), 0.0)
+
+
+def _build_bl_density(symbol: str, cal_dte: int, current_price: float, r: float = 0.045):
+    """
+    Build a smoothed B-L risk-neutral density from the nearest options expiry to cal_dte.
+
+    Returns (all_ks, all_ds, best_cal) where all_ks/all_ds are sorted, smoothed, non-negative
+    arrays ready for interpolation.  Returns (None, None, None) on any error.
+    """
+    from datetime import date as _date
+    from scipy.interpolate import interp1d
+
     df = _ensure_cboe_cached(symbol)
     if df is None or df.empty:
-        return []
+        return None, None, None
+
     try:
-        from datetime import date as _date
-        from scipy.interpolate import interp1d
-        from scipy.ndimage import gaussian_filter1d
-
         today = _date.today()
-        cal_dte = _bl_target_cal_dte(query_dte)
-
-        # --- Get GARCH terminal values at query_dte (trading days) ---
-        paths = cache.paths           # (n_paths, n_weeks)
-        week_idx = min((query_dte - 1) // 5, paths.shape[1] - 1)
-        S_T = paths[:, week_idx].astype(float)   # (n_paths,)
-        prior_pw = _compute_path_weights(
-            cache.prior_weights, cache.bin_assignments, cache.n_paths
-        )
-
-        # --- Get B-L density at nearest expiry to cal_dte ---
         tmp = df[df["ask"] > 0].copy()
         if tmp.empty:
-            return []
+            return None, None, None
+
         tmp["dte_cal"] = tmp["expiry"].apply(lambda e: (e - today).days)
         available = tmp["dte_cal"].unique()
         best_cal = int(available[np.argmin(np.abs(available - cal_dte))])
 
         grp = tmp[tmp["dte_cal"] == best_cal]
-        current_price = float(cache.current_price)
-
-        # Quality filter
         oi_ok    = grp["open_interest"].isna() | (grp["open_interest"] > 0)
         ask_safe = grp["ask"].clip(lower=0.01)
         spread_ok = (grp["bid"] == 0) | ((grp["ask"] - grp["bid"]) / ask_safe <= 0.60)
@@ -499,64 +500,128 @@ def _compute_bl_market_running_min(
         ks_put, ds_put   = np.array([]), np.array([])
         ks_call, ds_call = np.array([]), np.array([])
         if len(puts) >= 3:
-            ks_put, ds_put = _bl_fd_density(
-                puts["strike"].values.astype(float), _mids(puts), disc)
+            ks_put, ds_put = _bl_fd_density(puts["strike"].values.astype(float), _mids(puts), disc)
         if len(calls) >= 3:
-            ks_call, ds_call = _bl_fd_density(
-                calls["strike"].values.astype(float), _mids(calls), disc)
+            ks_call, ds_call = _bl_fd_density(calls["strike"].values.astype(float), _mids(calls), disc)
 
         if len(ks_put) + len(ks_call) < 3:
-            print(f"BL market running min: too few density points (puts={len(ks_put)}, calls={len(ks_call)})")
-            return []
+            return None, None, None
 
         all_ks = np.concatenate([ks_put, ks_call])
         all_ds = np.concatenate([ds_put, ds_call])
         sidx   = np.argsort(all_ks)
         all_ks = all_ks[sidx]
         all_ds = all_ds[sidx]
-        all_ds = gaussian_filter1d(all_ds, sigma=2.0)
-        all_ds = np.maximum(all_ds, 0.0)
 
-        # Interpolate B-L density at each path's terminal value
-        bl_interp = interp1d(all_ks, all_ds, kind='linear', bounds_error=False, fill_value=0.0)
-        f_bl = np.maximum(bl_interp(S_T), 0.0)   # (n_paths,)
+        all_ds = _bl_log_strike_smooth(all_ks, all_ds)
+        return all_ks, all_ds, best_cal
 
-        # Estimate GARCH prior density from binned terminal distribution
-        lo = float(np.percentile(S_T, 0.2))
-        hi = float(np.percentile(S_T, 99.8))
-        edges = np.linspace(lo, hi, n_bins + 1)
-        bin_width = (hi - lo) / n_bins
-        bin_assign = np.clip(np.searchsorted(edges[1:-1], S_T, side="left"), 0, n_bins - 1)
-        bin_mass   = np.bincount(bin_assign, weights=prior_pw, minlength=n_bins)
-        f_garch_bin = bin_mass / bin_width   # density per unit of SPX
+    except Exception as exc:
+        print(f"_build_bl_density error: {exc}")
+        return None, None, None
 
-        # Likelihood ratio per path (use bin-level GARCH density for stability)
-        f_garch_path = f_garch_bin[bin_assign]
-        lr = np.zeros(len(S_T))
-        valid = f_garch_path > 0
-        lr[valid] = f_bl[valid] / f_garch_path[valid]
 
-        # Reweighted measure: w[i] ∝ prior_pw[i] * LR[i]
-        new_weights = prior_pw * lr
+def _compute_bl_market_running_min(
+    symbol: str,
+    cache,
+    query_dte: int,
+    drawdown_levels: list,
+) -> list:
+    """
+    Reweight GARCH paths by the B-L risk-neutral terminal density, then compute
+    P(running min over 2yr ≤ level) under the reweighted measure.
+
+    query_dte is in trading days.  Returns list of float, or [] on error.
+    """
+    from spx_model import _compute_path_weights
+    from scipy.interpolate import interp1d
+    try:
+        cal_dte = _bl_target_cal_dte(query_dte)
+        current_price = float(cache.current_price)
+        all_ks, all_ds, best_cal = _build_bl_density(symbol, cal_dte, current_price)
+        if all_ks is None:
+            return []
+
+        # Warn if the best available expiry is substantially shorter than requested.
+        # The Market (RN) column shows 2-year running-minimum probabilities; anchoring
+        # to a much shorter expiry means the density carries less information about the
+        # tail region that drives those probabilities.
+        if best_cal < cal_dte * 0.75:
+            print(
+                f"BL market running min: WARNING — requested {cal_dte}d expiry but "
+                f"best available is {best_cal}d ({best_cal/cal_dte:.0%} of target). "
+                f"Market (RN) column anchored to a shorter-than-ideal expiry."
+            )
+
+        paths = cache.paths
+        week_idx = min((query_dte - 1) // 5, paths.shape[1] - 1)
+        S_T      = paths[:, week_idx].astype(float)
+        prior_pw = _compute_path_weights(cache.prior_weights, cache.bin_assignments, cache.n_paths)
+
+        bl_interp    = interp1d(all_ks, all_ds, kind='linear', bounds_error=False, fill_value=0.0)
+        f_bl         = np.maximum(bl_interp(S_T), 0.0)
+
+        from scipy.stats import gaussian_kde as _gkde
+        _kde      = _gkde(S_T, weights=prior_pw, bw_method='scott')
+        _kgrid    = np.linspace(float(np.percentile(S_T, 0.05)), float(np.percentile(S_T, 99.95)), 2000)
+        _kvals    = np.maximum(_kde(_kgrid), 1e-300)
+        f_garch   = np.maximum(
+            interp1d(_kgrid, _kvals, kind='linear', bounds_error=False, fill_value=1e-300)(S_T),
+            1e-300,
+        )
+
+        new_weights = prior_pw * (f_bl / f_garch)
         total = new_weights.sum()
         if total <= 0:
-            print("BL market running min: zero total weight after reweighting")
             return []
         new_weights /= total
 
-        # P(running min over 2yr ≤ level) under reweighted measure
         running_min = cache.running_min
-        results = []
-        for K in drawdown_levels:
-            mask = running_min < K
-            prob = float(np.clip(np.sum(new_weights[mask]), 0.0, 1.0))
-            results.append(round(prob, 4))
+        results = [round(float(np.clip(np.sum(new_weights[cache.running_min < K]), 0.0, 1.0)), 4)
+                   for K in drawdown_levels]
         print(f"BL market running min: best_cal={best_cal}, results={results}")
         return results
 
     except Exception as exc:
         print(f"BL market running min error: {exc}")
         import traceback; traceback.print_exc()
+        return []
+
+
+def _compute_bl_terminal_probs(
+    symbol: str,
+    query_dte: int,
+    current_price: float,
+    levels: list,
+) -> list:
+    """
+    P(terminal SPX < level) under the B-L risk-neutral CDF at query_dte.
+
+    Integrates the smoothed B-L density directly — no path reweighting.
+    query_dte is in trading days.  Returns list of float, or [] on error.
+    """
+    from scipy.interpolate import interp1d
+    try:
+        cal_dte = _bl_target_cal_dte(query_dte)
+        all_ks, all_ds, best_cal = _build_bl_density(symbol, cal_dte, current_price)
+        if all_ks is None or len(all_ks) < 2:
+            return []
+
+        # Normalise density then integrate to CDF
+        norm = np.trapz(all_ds, all_ks)
+        if norm <= 0:
+            return []
+        all_ds = all_ds / norm
+
+        cdf_vals = np.concatenate([[0.0],
+                                    np.cumsum(np.diff(all_ks) * (all_ds[:-1] + all_ds[1:]) / 2)])
+        cdf_vals = np.clip(cdf_vals, 0.0, 1.0)
+        cdf_fn   = interp1d(all_ks, cdf_vals, bounds_error=False, fill_value=(0.0, 1.0))
+
+        return [round(float(cdf_fn(lv)), 4) for lv in levels]
+
+    except Exception as exc:
+        print(f"_compute_bl_terminal_probs error: {exc}")
         return []
 
 
@@ -666,15 +731,13 @@ def _compute_bl_surface_slices(
             if len(all_ks) < 2:
                 continue
 
-            # Interpolate to the GARCH level grid (linear, zero outside support)
+            # Smooth in log-strike space (same kernel as _build_bl_density),
+            # then interpolate to the GARCH level grid.
+            all_ds = _bl_log_strike_smooth(all_ks, all_ds)
+
             interp_fn = interp1d(all_ks, all_ds, kind='linear',
                                  bounds_error=False, fill_value=0.0)
             pdf = np.maximum(interp_fn(levels), 0.0)
-
-            # Gaussian smoothing to remove finite-difference noise
-            from scipy.ndimage import gaussian_filter1d
-            pdf = gaussian_filter1d(pdf, sigma=2.0)
-            pdf = np.maximum(pdf, 0.0)
 
             total = pdf.sum()
             if total <= 0:
@@ -745,10 +808,12 @@ def api_model_preview():
 
     # Market column: B-L-reweighted GARCH running-min probabilities
     # (same metric as GARCH Prior / Your View — directly comparable)
+    # Always anchor to the longest available expiry (~2Y), independent of query_dte.
+    _BL_ANCHOR_DTE = 504  # ~2 years in trading days
     try:
         market_priors = _compute_bl_market_running_min(
             "SPX", cache,
-            query_dte,
+            _BL_ANCHOR_DTE,
             [s["level"] for s in prior_stats],
         )
     except Exception as exc:
@@ -767,6 +832,25 @@ def api_model_preview():
         print(f"Surface/BL error: {exc}")
         surface = {}
 
+    # Terminal table: same rows as prior_stats, prior/posterior/market_rn at query_dte
+    try:
+        t_levels   = [s["level"] for s in prior_stats]
+        t_pp       = model.terminal_tail_probs(t_levels, query_dte)
+        t_mkt      = _compute_bl_terminal_probs("SPX", query_dte, cache.current_price, t_levels)
+        terminal_stats = [
+            {
+                "drawdown":   prior_stats[i]["drawdown"],
+                "level":      prior_stats[i]["level"],
+                "prior":      t_pp["prior"][i],
+                "posterior":  t_pp["posterior"][i],
+                "market_rn":  t_mkt[i] if i < len(t_mkt) else None,
+            }
+            for i in range(len(prior_stats))
+        ]
+    except Exception as exc:
+        print(f"terminal_stats error: {exc}")
+        terminal_stats = []
+
     return jsonify({
         "current_price":   cache.current_price,
         "prior_stats":     prior_stats,
@@ -774,6 +858,7 @@ def api_model_preview():
         "quintile_groups": groups,
         "quintile_stats":  stats,
         "terminal":        terminal,
+        "terminal_stats":  terminal_stats,
         "market_priors":   market_priors,
         "surface":         surface,
     })

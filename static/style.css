@@ -832,7 +832,7 @@ header {
   font-size:     12px;
   padding:       5px 8px;
   outline:       none;
-  width:         100%;
+  width:         200px;
 }
 .mb-select:focus { border-color: var(--accent); }
 
@@ -886,6 +886,27 @@ header {
 .prior-table td.market-higher { color: var(--warn); }
 .prior-table td.market-lower  { color: var(--good); }
 .prior-loading { text-align: center !important; color: var(--text-dim); padding: 12px !important; }
+
+/* ── DTE-specific bottom section ────────────────────────────────────────── */
+.mb-dte-section {
+  border-top:   2px solid var(--border);
+  margin-top:   18px;
+  padding-top:  14px;
+}
+.mb-dte-header {
+  display:      flex;
+  align-items:  center;
+  gap:          12px;
+  margin-bottom: 12px;
+}
+.mb-dte-label {
+  font-size:    10px;
+  font-weight:  700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color:        var(--accent);
+  white-space:  nowrap;
+}
 
 /* ── Distribution surface chart ─────────────────────────────────────────── */
 #surfaceChart { width: 100%; min-height: 280px; }

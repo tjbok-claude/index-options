@@ -527,18 +527,6 @@ flat: same P(crash) applied to every option regardless of DTE. Useful as a quick
         </div>
       </div>
 
-      <!-- DTE selector for terminal dist -->
-      <div class="mb-section">
-        <div class="mb-section-title">Terminal Distribution at DTE</div>
-        <select id="mbQueryDte" class="mb-select" onchange="mbSchedulePreview()">
-          <option value="63">~3 months (63 trading days)</option>
-          <option value="126">~6 months (126 trading days)</option>
-          <option value="252" selected>~1 year (252 trading days)</option>
-          <option value="378">~18 months (378 trading days)</option>
-          <option value="504">~2 years (504 trading days)</option>
-        </select>
-      </div>
-
       <!-- Preview status -->
       <div class="mb-section">
         <div style="display:flex;align-items:center;gap:8px">
@@ -556,39 +544,33 @@ flat: same P(crash) applied to every option regardless of DTE. Useful as a quick
     <!-- ── Right column: charts ───────────────────────────── -->
     <div class="mb-right">
 
-      <!-- Prior table + terminal chart side by side -->
+      <!-- Row 1: Running-min table + representative paths side by side -->
       <div class="mb-section" style="display:flex;gap:16px;align-items:flex-start">
         <div style="flex:0 0 auto">
-          <div class="mb-section-title">YOUR VIEW VS MODEL / MARKET</div>
+          <div class="mb-section-title">YOUR VIEW VS MODEL / MARKET
+            <span class="help-tip" title="P(2yr running minimum ≤ level). Each row shows the probability that SPX touches this level at some point over a 2-year horizon. Your View blends your bucket inputs with the GARCH prior at your chosen EP confidence.">?</span>
+          </div>
           <table class="prior-table" id="priorTable">
             <thead><tr>
-              <th>Drawdown</th><th>SPX Level</th>
+              <th>Move</th><th>SPX Level</th>
               <th>Your View</th><th>GARCH Prior</th>
-              <th title="P(2yr running min ≤ level) under market-implied (B-L) measure. GARCH paths reweighted by B-L risk-neutral terminal density. Directly comparable to GARCH Prior and Your View columns.">Market (RN)</th>
+              <th title="P(2yr running min ≤ level) under the market-implied terminal distribution. GARCH paths are reweighted so their terminal distribution matches the B-L risk-neutral density; running-minimum probabilities are then read from those reweighted paths. Path dynamics (crash timing, recovery shape) are still from the GARCH model — only the terminal distribution is anchored to market option prices. Generally higher than GARCH Prior due to the risk-neutral fear premium.">Market (RN)</th>
             </tr></thead>
             <tbody id="priorBody"><tr><td colspan="5" class="prior-loading">Loading…</td></tr></tbody>
           </table>
         </div>
         <div style="flex:1 1 0;min-width:0">
-          <div class="mb-section-title">Terminal Distribution at Selected DTE</div>
-          <div class="chart-wrap chart-wrap-short">
-            <canvas id="termChart"></canvas>
+          <div class="mb-section-title">Representative Paths by Quintile
+            <span class="help-tip" title="5 paths ranked by severity of 2yr drawdown. Quintile 1 (red) = worst crash scenario. Quintile 5 (green) = bull case. Line weight shows EP probability mass in each quintile — thicker = more weight under your view.">?</span>
           </div>
+          <div class="chart-wrap">
+            <canvas id="pathChart"></canvas>
+          </div>
+          <div id="decileWeights" class="decile-weights"></div>
         </div>
       </div>
 
-      <!-- Decile paths chart -->
-      <div class="mb-section">
-        <div class="mb-section-title">Representative Paths by Quintile
-          <span class="help-tip" title="5 paths ranked by severity of 2yr drawdown. Quintile 1 (red) = worst crash scenario. Quintile 5 (green) = bull case. Line weight shows EP probability mass in each quintile — thicker = more weight under your view.">?</span>
-        </div>
-        <div class="chart-wrap">
-          <canvas id="pathChart"></canvas>
-        </div>
-        <div id="decileWeights" class="decile-weights"></div>
-      </div>
-
-      <!-- Distribution surface chart -->
+      <!-- Row 2: Distribution surface (full width) -->
       <div class="mb-section">
         <div class="mb-section-title">Distribution Surface
           <div class="surface-toggle" id="surfaceToggle">
@@ -598,6 +580,41 @@ flat: same P(crash) applied to every option regardless of DTE. Useful as a quick
           </div>
         </div>
         <div id="surfaceChart"></div>
+      </div>
+
+      <!-- ── DTE-specific section ──────────────────────────── -->
+      <div class="mb-dte-section">
+        <div class="mb-dte-header">
+          <span class="mb-dte-label">At expiration (DTE-specific)</span>
+          <select id="mbQueryDte" class="mb-select" onchange="mbSchedulePreview()">
+            <option value="63">~3 months (63 td)</option>
+            <option value="126">~6 months (126 td)</option>
+            <option value="252" selected>~1 year (252 td)</option>
+            <option value="378">~18 months (378 td)</option>
+            <option value="504">~2 years (504 td)</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:16px;align-items:flex-start">
+          <div style="flex:0 0 auto">
+            <div class="mb-section-title">TERMINAL AT DTE
+              <span class="help-tip" title="P(SPX terminal price ≤ level) at the selected expiration date. Your View = EP-reweighted GARCH. GARCH Prior = unweighted simulation. Market (RN) = risk-neutral CDF from B-L density at nearest listed expiry. Unlike the 2yr running-min table above, this measures where SPX lands on a specific date — not whether it ever touched that level.">?</span>
+            </div>
+            <table class="prior-table" id="terminalTable">
+              <thead><tr>
+                <th>Move</th><th>SPX Level</th>
+                <th>Your View</th><th>GARCH Prior</th>
+                <th title="P(terminal SPX ≤ level) under the B-L risk-neutral density at the nearest listed expiry to the selected DTE. Directly integrated from Breeden-Litzenberger density — no path reweighting.">Market (RN)</th>
+              </tr></thead>
+              <tbody id="terminalBody"><tr><td colspan="5" class="prior-loading">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div style="flex:1 1 0;min-width:0">
+            <div class="mb-section-title">Terminal Distribution</div>
+            <div class="chart-wrap chart-wrap-short">
+              <canvas id="termChart"></canvas>
+            </div>
+          </div>
+        </div>
       </div>
 
     </div><!-- end mb-right -->

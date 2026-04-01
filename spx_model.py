@@ -17,6 +17,7 @@ import numpy as np
 from arch import arch_model
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import minimize
+from scipy.special import logsumexp
 import yfinance as yf
 
 from scenarios import Scenario, _crash_name, _validate
@@ -143,7 +144,9 @@ def _simulate_paths(
     from scipy.stats import t as student_t
 
     p = garch_result.params
-    # mu_override: annualised % return (e.g. 7.0 = 7%/yr); None = use fitted value
+    # mu_override: annualised arithmetic % return (e.g. 7.0 = 7%/yr); None = use fitted value.
+    # Because compounding uses log1p(r/100), the realised geometric compound rate will be
+    # approximately mu_override − σ_annual²/2 (≈1–1.5% lower at typical SPX volatility).
     if mu_override is not None:
         mu = float(mu_override) / 252.0   # convert annual % → daily %
     else:
@@ -223,7 +226,15 @@ def _build_bins(
     """
     bin_edges = np.percentile(running_min, np.linspace(0, 100, n_bins + 1))
     bin_edges = np.unique(bin_edges)  # handle duplicate edges at tails
-    n_bins = len(bin_edges) - 1
+    actual_bins = len(bin_edges) - 1
+    if actual_bins < int(0.80 * n_bins):
+        print(
+            f"_build_bins: requested {n_bins} bins but only {actual_bins} unique "
+            f"percentile edges after np.unique (collapsed {n_bins - actual_bins} "
+            f"duplicates). EP resolution may be reduced — consider a higher n_bins "
+            f"or investigate path distribution in low-volatility regimes."
+        )
+    n_bins = actual_bins
 
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
     prior_weights = np.ones(n_bins) / n_bins
@@ -333,12 +344,22 @@ def _entropy_pool(
     """
     Minimize KL(q||p) subject to CDF constraints from view_buckets.
     Returns posterior_weights of shape (n_bins,).
+
+    Uses the dual (Lagrange multiplier) formulation: optimises over
+    dim = n_constraints (typically 1–3) rather than n_bins (200), which is
+    both faster and more robust than the primal SLSQP approach.  The dual
+    objective is strictly concave so L-BFGS-B converges to the global
+    optimum without needing per-bin bounds or constraint Jacobians.
+
+    Optimal posterior: q*(i) = p(i) · exp((Aᵀλ)[i]) / Z(λ)
+    Dual (maximised):  log Z(λ) − λᵀb,  ∇ = E_q*[A] − b
     """
     if confidence <= 0.0:
         return prior_weights.copy()
 
     n_bins = len(prior_weights)
-    p = prior_weights.copy()
+    p      = prior_weights.copy()
+    log_p  = np.log(p + 1e-300)
 
     # Map view bucket SPX levels to bin indices
     constraint_pairs: list[tuple[int, float]] = []
@@ -349,45 +370,46 @@ def _entropy_pool(
             seen_bins.add(k)
             constraint_pairs.append((k, float(cum_prob)))
 
-    def kl_objective(q: np.ndarray) -> float:
-        return float(np.sum(q * np.log(q / (p + 1e-300) + 1e-300)))
+    if not constraint_pairs:
+        return prior_weights.copy()
 
-    def kl_gradient(q: np.ndarray) -> np.ndarray:
-        return np.log(q / (p + 1e-300) + 1e-300) + 1.0
+    # Build cumulative-indicator constraint matrix A (n_con × n_bins)
+    n_con = len(constraint_pairs)
+    A = np.zeros((n_con, n_bins))
+    b = np.zeros(n_con)
+    for j, (k, cp) in enumerate(constraint_pairs):
+        A[j, :k + 1] = 1.0
+        b[j] = cp
 
-    constraints = [
-        {
-            "type": "eq",
-            "fun": lambda q: q.sum() - 1.0,
-            "jac": lambda q: np.ones(n_bins),
-        }
-    ]
-    for k, cp in constraint_pairs:
-        def make_con(k_: int = k, cp_: float = cp) -> dict:
-            return {
-                "type": "eq",
-                "fun": lambda q, _k=k_, _cp=cp_: q[: _k + 1].sum() - _cp,
-                "jac": lambda q, _k=k_: np.concatenate(
-                    [np.ones(_k + 1), np.zeros(n_bins - _k - 1)]
-                ),
-            }
-        constraints.append(make_con())
+    def neg_dual_and_grad(lam: np.ndarray):
+        tilt  = A.T @ lam                          # (n_bins,)
+        log_w = log_p + tilt
+        log_Z = logsumexp(log_w)
+        q     = np.exp(log_w - log_Z)              # posterior
+        # Dual to maximise: d(λ) = −log Z + λᵀb
+        # We minimise neg_d(λ) = log Z − λᵀb
+        f     = log_Z - float(lam @ b)
+        g     = A @ q - b                          # gradient of neg_d
+        return float(f), g
 
     result = minimize(
-        kl_objective,
-        p.copy(),
-        jac=kl_gradient,
-        method="SLSQP",
-        bounds=[(1e-10, 1.0)] * n_bins,
-        constraints=constraints,
-        options={"maxiter": 1000, "ftol": 1e-10},
+        neg_dual_and_grad,
+        np.zeros(n_con),
+        jac=True,
+        method="L-BFGS-B",
+        options={"maxiter": 1000, "ftol": 1e-12, "gtol": 1e-8},
     )
 
-    if result.success:
-        q_ep = np.maximum(result.x, 0.0)
-        q_ep /= q_ep.sum()
-    else:
-        # Fallback: direct PCHIP assignment
+    if not result.success:
+        print(f"_entropy_pool (dual L-BFGS-B): {result.message}")
+
+    tilt  = A.T @ result.x
+    log_w = log_p + tilt
+    q_ep  = np.exp(log_w - logsumexp(log_w))
+
+    if not np.isfinite(q_ep).all() or q_ep.sum() <= 0:
+        # Emergency fallback — should be extremely rare with the dual formulation
+        print("_entropy_pool: dual produced invalid posterior, falling back to PCHIP")
         q_ep = _smooth_views(view_buckets, bin_edges)
 
     # Blend with confidence
@@ -674,18 +696,22 @@ class GJREntropyModel:
         """
         Generate scenarios at given DTE from the posterior terminal distribution.
 
+        dte: calendar days to expiry (same unit as df["dte"] in score_puts).
+
         Crash scenario probabilities are derived from incremental CDF buckets.
         Non-crash probability is the complement, split by params.non_crash_splits shares.
         """
+        trading_dte = int(round(dte * 252 / 365))
         levels, probs = _posterior_terminal(
             self._cache.paths,
             self._path_weights,
-            target_day=dte,
+            target_day=trading_dte,
         )
 
-        sort_idx = np.argsort(levels)
+        sort_idx      = np.argsort(levels)
         levels_sorted = levels[sort_idx]
-        cum_probs = np.cumsum(probs[sort_idx])
+        probs_sorted  = probs[sort_idx]
+        cum_probs     = np.cumsum(probs_sorted)
 
         spot = self._cache.current_price
 
@@ -697,21 +723,37 @@ class GJREntropyModel:
         crash_splits_sorted = sorted(params.crash_splits, key=lambda x: x[1])
 
         scenarios: list[Scenario] = []
-        prev_cum = 0.0
+        prev_cum       = 0.0
+        prev_threshold = 0.0   # lower boundary of current crash bucket
 
         for _crash_share, spx_ret in crash_splits_sorted:
             threshold = spot * (1.0 + spx_ret)
-            p_below = prob_below(threshold)
-            p_bucket = max(0.0, p_below - prev_cum)
+            p_below   = prob_below(threshold)
+            p_bucket  = max(0.0, p_below - prev_cum)
+
+            # Posterior-weighted conditional mean terminal return within this bucket.
+            # Using the binned terminal distribution avoids re-accessing raw paths.
+            if prev_threshold <= 0:
+                bmask = levels_sorted < threshold
+            else:
+                bmask = (levels_sorted >= prev_threshold) & (levels_sorted < threshold)
+            bp     = probs_sorted[bmask]
+            bp_sum = bp.sum()
+            if bp_sum > 0:
+                cond_ret = float(np.dot(bp, levels_sorted[bmask])) / bp_sum / spot - 1.0
+            else:
+                cond_ret = spx_ret   # fallback to bucket boundary if bucket is empty
+
             scenarios.append(
                 Scenario(
                     name=_crash_name(spx_ret),
-                    spx_return=spx_ret,
+                    spx_return=cond_ret,
                     probability=p_bucket,
                     is_crash=True,
                 )
             )
-            prev_cum = p_below
+            prev_cum       = p_below
+            prev_threshold = threshold
 
         # Non-crash: probability above the least severe crash threshold
         least_severe_ret = max(spx_ret for _, spx_ret in params.crash_splits)
@@ -1053,7 +1095,8 @@ class GJREntropyModel:
             crash_threshold_ret: SPX return defining "crash" for crash_epay split;
                                  should match least-severe entry in Params.crash_splits
         """
-        week_idx     = min((dte - 1) // 5, self._cache.paths.shape[1] - 1)
+        trading_dte  = int(round(dte * 252 / 365))   # dte is calendar days; paths are indexed in trading days
+        week_idx     = min((trading_dte - 1) // 5, self._cache.paths.shape[1] - 1)
         spx_terminal = self._cache.paths[:, week_idx]            # (n_paths,)
         w            = self._path_weights                         # (n_paths,)
 
@@ -1106,3 +1149,34 @@ class GJREntropyModel:
             t_assign, weights=self._path_weights, minlength=n_b
         ).tolist()
         return {"levels": centers, "prior_probs": prior_probs, "posterior_probs": post_probs}
+
+    def terminal_tail_probs(
+        self,
+        thresholds: list[float],
+        query_dte: int,
+    ) -> dict:
+        """
+        P(terminal SPX < threshold) at query_dte under the prior and posterior.
+
+        query_dte: trading days (same unit as the API preview's query_dte parameter).
+
+        Returns {"thresholds": [...], "prior": [...], "posterior": [...]}
+        suitable for inclusion in the /api/model/preview response as a diagnostic
+        showing how much the EP posterior shifted the terminal distribution relative
+        to the GARCH prior.
+        """
+        week_idx = min((query_dte - 1) // 5, self._cache.paths.shape[1] - 1)
+        S_T      = self._cache.paths[:, week_idx]
+        prior_pw = _compute_path_weights(
+            self._cache.prior_weights, self._cache.bin_assignments, self._cache.n_paths
+        )
+        result: dict = {
+            "thresholds": [int(round(t)) for t in thresholds],
+            "prior":      [],
+            "posterior":  [],
+        }
+        for t in thresholds:
+            mask = S_T < t
+            result["prior"].append(round(float(np.sum(prior_pw[mask])), 4))
+            result["posterior"].append(round(float(np.sum(self._path_weights[mask])), 4))
+        return result
